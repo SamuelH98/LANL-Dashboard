@@ -1,50 +1,47 @@
-// ========================================
-// PART 1: Create constraints and indexes
-// ========================================
+// CORRECTED VERSION - Matches your actual CSV format
+// Your CSV has: features (column A) and label (column B)
+// Features contain: time,source_user,dest_user,source_computer,dest_computer,auth_type,logon_type,auth_orientation,success
+
+// Step 1: Create constraints FIRST
 CREATE CONSTRAINT user_name_unique IF NOT EXISTS FOR (u:User) REQUIRE u.name IS UNIQUE;
 CREATE CONSTRAINT computer_name_unique IF NOT EXISTS FOR (c:Computer) REQUIRE c.name IS UNIQUE;
+
+// Step 2: Pre-create all unique users
+LOAD CSV WITH HEADERS FROM 'file:///output.csv' AS row
+WITH row WHERE row.features IS NOT NULL AND trim(row.features) <> ''
+WITH split(row.features, ',') AS features
+WHERE size(features) >= 9
+WITH DISTINCT trim(features[1]) AS source_user, trim(features[2]) AS dest_user
+UNWIND [source_user, dest_user] AS user_name
+WITH DISTINCT user_name WHERE user_name <> '' AND user_name IS NOT NULL
+MERGE (u:User {name: user_name});
+
+// Step 3: Pre-create all unique computers
+LOAD CSV WITH HEADERS FROM 'file:///output.csv' AS row
+WITH row WHERE row.features IS NOT NULL AND trim(row.features) <> ''
+WITH split(row.features, ',') AS features
+WHERE size(features) >= 9
+WITH DISTINCT trim(features[3]) AS source_computer, trim(features[4]) AS dest_computer
+UNWIND [source_computer, dest_computer] AS computer_name
+WITH DISTINCT computer_name WHERE computer_name <> '' AND computer_name IS NOT NULL
+MERGE (c:Computer {name: computer_name});
+
+// Step 4: Create indexes AFTER nodes are created
 CREATE INDEX auth_time_index IF NOT EXISTS FOR (a:AuthEvent) ON (a.time);
 CREATE INDEX auth_success_index IF NOT EXISTS FOR (a:AuthEvent) ON (a.success);
 CREATE INDEX auth_type_index IF NOT EXISTS FOR (a:AuthEvent) ON (a.auth_type);
 CREATE INDEX redteam_label_index IF NOT EXISTS FOR (a:AuthEvent) ON (a.is_redteam);
 
-// ========================================
-// PART 2: Memory-optimized import (Neo4j 5.x+ syntax)
-// ========================================
-
-// RECOMMENDED APPROACH: Use the two-step process from PART 3 below
-// This part is kept for reference but PART 3 is the preferred method
-
-// ========================================
-// PART 3: Alternative approach - Split into smaller batches
-// ========================================
-
-// Step 1: Pre-create all users and computers to avoid repeated MERGE operations
-LOAD CSV WITH HEADERS FROM 'file:///output.csv' AS row
-WITH row WHERE row.features IS NOT NULL AND row.label IS NOT NULL
-WITH row, 
-     split(replace(replace(row.features, '"', ''), '\n', ''), ',') AS features
-WHERE size(features) = 9
-WITH DISTINCT trim(features[1]) AS source_user, trim(features[2]) AS dest_user,
-     trim(features[3]) AS source_computer, trim(features[4]) AS dest_computer
-UNWIND [source_user, dest_user] AS user_name
-WITH COLLECT(DISTINCT user_name) AS users, 
-     COLLECT(DISTINCT source_computer) + COLLECT(DISTINCT dest_computer) AS computers
-UNWIND users AS user_name
-MERGE (u:User {name: user_name})
-WITH computers
-UNWIND computers AS computer_name  
-MERGE (c:Computer {name: computer_name});
-
-// Step 2: Import authentication events in smaller batches
+// Step 5: Import main data with transaction batching
 CALL {
     LOAD CSV WITH HEADERS FROM 'file:///output.csv' AS row
-    WITH row WHERE row.features IS NOT NULL AND row.label IS NOT NULL
-    WITH row, 
-         split(replace(replace(row.features, '"', ''), '\n', ''), ',') AS features
-    WHERE size(features) = 9
+    WITH row WHERE row.features IS NOT NULL AND row.label IS NOT NULL 
+                AND trim(row.features) <> '' AND trim(row.label) <> ''
+    WITH row, split(row.features, ',') AS features
+    WHERE size(features) >= 9
     WITH row,
-         toInteger(features[0]) AS event_time,
+         // Parse the features - your format: time,source_user,dest_user,source_computer,dest_computer,auth_type,logon_type,auth_orientation,success
+         toInteger(trim(features[0])) AS event_time,
          trim(features[1]) AS source_user,
          trim(features[2]) AS dest_user, 
          trim(features[3]) AS source_computer,
@@ -53,9 +50,12 @@ CALL {
          trim(features[6]) AS logon_type,
          trim(features[7]) AS auth_orientation,
          trim(features[8]) AS success,
-         toInteger(row.label) AS is_redteam
+         toInteger(trim(row.label)) AS is_redteam
     
-    // Find existing nodes
+    // Skip rows with empty critical fields
+    WHERE source_user <> '' AND dest_user <> '' AND source_computer <> '' AND dest_computer <> ''
+    
+    // Find existing nodes (faster than MERGE since they already exist)
     MATCH (su:User {name: source_user})
     MATCH (du:User {name: dest_user})
     MATCH (sc:Computer {name: source_computer})
@@ -72,7 +72,7 @@ CALL {
         timestamp: datetime({epochSeconds: event_time})
     })
     
-    // Create relationships
+    // Create all relationships
     CREATE (su)-[:AUTHENTICATED_FROM]->(sc)
     CREATE (du)-[:AUTHENTICATED_TO]->(dc)
     CREATE (auth)-[:SOURCE_USER]->(su)
@@ -80,29 +80,25 @@ CALL {
     CREATE (auth)-[:SOURCE_COMPUTER]->(sc)
     CREATE (auth)-[:DEST_COMPUTER]->(dc)
     
-    // Handle red team events
-    FOREACH (ignore IN CASE WHEN is_redteam = 1 THEN [1] ELSE [] END |
-        SET auth:RedTeamEvent
-    )
+    // Add red team label if applicable
+    WITH auth, is_redteam
+    WHERE is_redteam = 1
+    SET auth:RedTeamEvent
     
     RETURN count(*) AS processed
-} IN TRANSACTIONS OF 500 ROWS;
-
-// ========================================
-// PART 4: Create red team activity node and relationships
-// ========================================
-MERGE (rt:RedTeamActivity {name: "Red Team Campaign"});
-
-MATCH (auth:RedTeamEvent), (rt:RedTeamActivity {name: "Red Team Campaign"})
-WITH auth, rt
-CALL {
-    WITH auth, rt
-    CREATE (auth)-[:PART_OF]->(rt)
 } IN TRANSACTIONS OF 1000 ROWS;
 
-// ========================================
-// PART 5: Create summary statistics
-// ========================================
+// Step 6: Create red team activity node and connect red team events
+MERGE (rt:RedTeamActivity {name: "Red Team Campaign"});
+
+CALL {
+    MATCH (auth:RedTeamEvent)
+    MATCH (rt:RedTeamActivity {name: "Red Team Campaign"})
+    CREATE (auth)-[:PART_OF]->(rt)
+    RETURN count(*) AS connected
+} IN TRANSACTIONS OF 5000 ROWS;
+
+// Step 7: Create summary statistics
 MATCH (a:AuthEvent)
 WITH count(a) as total_events, 
      sum(CASE WHEN a.is_redteam = 1 THEN 1 ELSE 0 END) as redteam_events,
@@ -115,27 +111,37 @@ CREATE (stats:ImportStats {
     import_date: datetime()
 });
 
-// ========================================
-// PART 6: Validation queries
-// ========================================
-
-// Show import statistics
-MATCH (stats:ImportStats)
-RETURN stats.total_events AS TotalEvents,
-       stats.redteam_events AS RedTeamEvents,
-       stats.benign_events AS BenignEvents,
-       stats.unique_timestamps AS UniqueTimestamps,
-       stats.import_date AS ImportDate;
-
-// Show sample of imported data
+// Step 8: Validation queries
 MATCH (a:AuthEvent)
 RETURN a.time, a.auth_type, a.success, a.is_redteam
 ORDER BY a.time
 LIMIT 10;
 
-// Show node counts
-MATCH (u:User) WITH count(u) AS users
-MATCH (c:Computer) WITH users, count(c) AS computers  
-MATCH (a:AuthEvent) WITH users, computers, count(a) AS auth_events
-MATCH (rt:RedTeamEvent) WITH users, computers, auth_events, count(rt) AS redteam_events
-RETURN users, computers, auth_events, redteam_events;
+// Additional validation - check data distribution
+MATCH (u:User) RETURN count(u) AS total_users;
+MATCH (c:Computer) RETURN count(c) AS total_computers;
+MATCH (a:AuthEvent) RETURN count(a) AS total_events;
+MATCH (a:AuthEvent) WHERE a.is_redteam = 1 RETURN count(a) AS redteam_events;
+
+// DEBUGGING VERSION - Use this first to test with a small sample
+/*
+// Test with first 10 rows to debug
+LOAD CSV WITH HEADERS FROM 'file:///output.csv' AS row
+WITH row WHERE row.features IS NOT NULL AND row.label IS NOT NULL 
+WITH row, split(row.features, ',') AS features
+WHERE size(features) >= 9
+WITH row,
+     toInteger(trim(features[0])) AS event_time,
+     trim(features[1]) AS source_user,
+     trim(features[2]) AS dest_user, 
+     trim(features[3]) AS source_computer,
+     trim(features[4]) AS dest_computer,
+     trim(features[5]) AS auth_type,
+     trim(features[6]) AS logon_type,
+     trim(features[7]) AS auth_orientation,
+     trim(features[8]) AS success,
+     toInteger(trim(row.label)) AS is_redteam
+RETURN event_time, source_user, dest_user, source_computer, dest_computer, 
+       auth_type, logon_type, auth_orientation, success, is_redteam
+LIMIT 10;
+*/
