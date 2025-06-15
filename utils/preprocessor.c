@@ -194,9 +194,9 @@ void* process_auth_events(void* arg) {
             matches_found++;
         }
         
-        // Create feature string for BERT training
+        // Create output line with individual columns (not quoted as single feature)
         snprintf(output_line, sizeof(output_line), 
-                "\"%d,%s,%s,%s,%s,%s,%s,%s,%s\",%d\n",
+                "%d,%s,%s,%s,%s,%s,%s,%s,%s,%d\n",
                 event->time,
                 event->source_user,
                 event->dest_user,
@@ -306,8 +306,8 @@ int process_auth_file_chunked(const char* auth_filename, const char* output_file
         return 0;
     }
     
-    // Write CSV header
-    fprintf(output_file, "features,label\n");
+    // Write CSV header with individual columns
+    fprintf(output_file, "time,source user@domain,destination user@domain,source computer,destination computer,authentication type,logon type,authentication orientation,success/failure,label\n");
     
     // Allocate memory for one chunk
     auth_event_t* chunk = malloc(CHUNK_SIZE * sizeof(auth_event_t));
