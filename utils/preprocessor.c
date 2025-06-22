@@ -11,6 +11,7 @@
 #define CHUNK_SIZE 1000000  // Process 1M lines at a time
 #define NUM_THREADS 15
 #define MAX_REDTEAM_EVENTS 100000
+#define MAX_COMPUTERS_LIMIT 300  // Limit to 300 unique computers
 
 // Structure to hold authentication data
 typedef struct {
@@ -33,6 +34,13 @@ typedef struct {
     char dest_computer[256];
 } redteam_event_t;
 
+// Structure to track unique computers
+typedef struct {
+    char computers[MAX_COMPUTERS_LIMIT][256];
+    int count;
+    pthread_mutex_t mutex;
+} computer_set_t;
+
 // Thread data structure
 typedef struct {
     auth_event_t *auth_events;
@@ -45,6 +53,7 @@ typedef struct {
     int thread_id;
     int *total_matches;
     pthread_mutex_t *match_mutex;
+    computer_set_t *computer_set;
 } thread_data_t;
 
 // Global variables
@@ -52,6 +61,7 @@ static redteam_event_t redteam_events[MAX_REDTEAM_EVENTS];
 static int redteam_count = 0;
 static pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t match_mutex = PTHREAD_MUTEX_INITIALIZER;
+static computer_set_t global_computer_set = {.count = 0, .mutex = PTHREAD_MUTEX_INITIALIZER};
 
 // Function to trim whitespace
 char* trim(char* str) {
@@ -67,6 +77,76 @@ char* trim(char* str) {
 // Function to check if line contains question mark
 int contains_question_mark(const char* line) {
     return strchr(line, '?') != NULL;
+}
+
+// Function to check if computer is in the allowed set
+int is_computer_allowed(const char* computer, computer_set_t* comp_set) {
+    pthread_mutex_lock(&comp_set->mutex);
+    
+    // Check if computer is already in the set
+    for (int i = 0; i < comp_set->count; i++) {
+        if (strcmp(comp_set->computers[i], computer) == 0) {
+            pthread_mutex_unlock(&comp_set->mutex);
+            return 1;
+        }
+    }
+    
+    // If not in set and we haven't reached the limit, add it
+    if (comp_set->count < MAX_COMPUTERS_LIMIT) {
+        strncpy(comp_set->computers[comp_set->count], computer, 255);
+        comp_set->computers[comp_set->count][255] = '\0';
+        comp_set->count++;
+        pthread_mutex_unlock(&comp_set->mutex);
+        return 1;
+    }
+    
+    pthread_mutex_unlock(&comp_set->mutex);
+    return 0;  // Computer limit reached and this computer is not in the allowed set
+}
+
+// Function to add red team computers to the allowed set
+void add_redteam_computers_to_set(computer_set_t* comp_set) {
+    pthread_mutex_lock(&comp_set->mutex);
+    
+    for (int i = 0; i < redteam_count && comp_set->count < MAX_COMPUTERS_LIMIT; i++) {
+        // Add source computer if not already present
+        int found_source = 0;
+        for (int j = 0; j < comp_set->count; j++) {
+            if (strcmp(comp_set->computers[j], redteam_events[i].source_computer) == 0) {
+                found_source = 1;
+                break;
+            }
+        }
+        if (!found_source && comp_set->count < MAX_COMPUTERS_LIMIT) {
+            strncpy(comp_set->computers[comp_set->count], redteam_events[i].source_computer, 255);
+            comp_set->computers[comp_set->count][255] = '\0';
+            comp_set->count++;
+        }
+        
+        // Add destination computer if not already present
+        int found_dest = 0;
+        for (int j = 0; j < comp_set->count; j++) {
+            if (strcmp(comp_set->computers[j], redteam_events[i].dest_computer) == 0) {
+                found_dest = 1;
+                break;
+            }
+        }
+        if (!found_dest && comp_set->count < MAX_COMPUTERS_LIMIT) {
+            strncpy(comp_set->computers[comp_set->count], redteam_events[i].dest_computer, 255);
+            comp_set->computers[comp_set->count][255] = '\0';
+            comp_set->count++;
+        }
+    }
+    
+    pthread_mutex_unlock(&comp_set->mutex);
+    printf("Added red team computers to allowed set. Current count: %d\n", comp_set->count);
+}
+
+// Function to check if an auth event should be processed based on computer sampling
+int should_process_auth_event(auth_event_t* auth, computer_set_t* comp_set) {
+    // Check if either source or destination computer is in the allowed set
+    return (is_computer_allowed(auth->source_computer, comp_set) || 
+            is_computer_allowed(auth->dest_computer, comp_set));
 }
 
 // Function to parse authentication line
@@ -185,9 +265,16 @@ void* process_auth_events(void* arg) {
     char output_line[2048];
     int processed = 0;
     int matches_found = 0;
+    int skipped_sampling = 0;
     
     for (int i = data->start_idx; i < data->end_idx; i++) {
         auth_event_t* event = &data->auth_events[i];
+        
+        // Check if this event should be processed based on computer sampling
+        if (!should_process_auth_event(event, data->computer_set)) {
+            skipped_sampling++;
+            continue;
+        }
         
         int is_redteam = is_redteam_event(event, data->redteam_events, data->redteam_count);
         if (is_redteam) {
@@ -255,6 +342,10 @@ int load_redteam_events(const char* filename) {
     if (skipped_lines > 0) {
         printf("Skipped %d lines containing '?' characters\n", skipped_lines);
     }
+    
+    // Add red team computers to the allowed set
+    add_redteam_computers_to_set(&global_computer_set);
+    
     return redteam_count;
 }
 
@@ -276,6 +367,7 @@ int process_chunk(auth_event_t* chunk, int chunk_size, FILE* output_file, int* t
         thread_data[i].thread_id = i;
         thread_data[i].total_matches = total_matches;
         thread_data[i].match_mutex = &match_mutex;
+        thread_data[i].computer_set = &global_computer_set;
         
         if (pthread_create(&threads[i], NULL, process_auth_events, &thread_data[i]) != 0) {
             printf("Error creating thread %d\n", i);
@@ -326,6 +418,7 @@ int process_auth_file_chunked(const char* auth_filename, const char* output_file
     int skipped_lines = 0;
     
     printf("Processing authentication file in chunks of %d events...\n", CHUNK_SIZE);
+    printf("Computer limit: %d unique computers\n", MAX_COMPUTERS_LIMIT);
     
     while (fgets(line, sizeof(line), auth_file)) {
         if (strlen(line) > 1) {  // Skip empty lines
@@ -352,6 +445,7 @@ int process_auth_file_chunked(const char* auth_filename, const char* output_file
                     total_processed += current_chunk_size;
                     printf("Chunk %d completed. Total processed: %d, Total matches: %d\n", 
                            chunk_count, total_processed, total_matches);
+                    printf("Unique computers tracked: %d\n", global_computer_set.count);
                     
                     current_chunk_size = 0;  // Reset for next chunk
                 }
@@ -385,6 +479,7 @@ int process_auth_file_chunked(const char* auth_filename, const char* output_file
     printf("Total chunks processed: %d\n", chunk_count);
     printf("Total events processed: %d\n", total_processed);
     printf("Total matches found: %d\n", total_matches);
+    printf("Unique computers tracked: %d (limit: %d)\n", global_computer_set.count, MAX_COMPUTERS_LIMIT);
     if (skipped_lines > 0) {
         printf("Total lines skipped (containing '?'): %d\n", skipped_lines);
     }
@@ -402,14 +497,16 @@ int main(int argc, char* argv[]) {
     const char* redteam_filename = argv[2];
     const char* output_filename = argv[3];
     
-    printf("Multi-threaded Chunked Data Preprocessor\n");
-    printf("=======================================\n");
+    printf("Multi-threaded Chunked Data Preprocessor with Computer Sampling\n");
+    printf("==============================================================\n");
     printf("Auth file: %s\n", auth_filename);
     printf("Red team file: %s\n", redteam_filename);
     printf("Output file: %s\n", output_filename);
     printf("Threads: %d\n", NUM_THREADS);
     printf("Chunk size: %d events\n", CHUNK_SIZE);
-    printf("Note: Lines containing '?' will be skipped\n\n");
+    printf("Computer limit: %d unique computers\n", MAX_COMPUTERS_LIMIT);
+    printf("Note: Lines containing '?' will be skipped\n");
+    printf("Note: All red team computers will be preserved\n\n");
     
     clock_t start_time = clock();
     
@@ -430,6 +527,7 @@ int main(int argc, char* argv[]) {
     printf("\nProcessing completed successfully!\n");
     printf("Total events processed: %d\n", processed);
     printf("Red team events: %d\n", redteam_count);
+    printf("Unique computers tracked: %d\n", global_computer_set.count);
     printf("Processing time: %.2f seconds\n", elapsed_time);
     printf("Average speed: %.0f events/second\n", processed / elapsed_time);
     printf("Output saved to: %s\n", output_filename);
