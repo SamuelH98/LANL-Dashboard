@@ -1,5 +1,5 @@
-// Neo4j Cypher Import Script for Authentication Data with Chunking
-// ==============================================================
+// Neo4j Cypher Import Script for Authentication Data
+// ================================================
 
 // First, create constraints and indexes for better performance
 CREATE CONSTRAINT user_id IF NOT EXISTS FOR (u:User) REQUIRE u.name IS UNIQUE;
@@ -8,61 +8,10 @@ CREATE INDEX auth_time_idx IF NOT EXISTS FOR (a:AuthEvent) ON (a.time);
 CREATE INDEX auth_success_idx IF NOT EXISTS FOR (a:AuthEvent) ON (a.success);
 CREATE INDEX auth_redteam_idx IF NOT EXISTS FOR (a:AuthEvent) ON (a.is_redteam);
 
-// Configuration: Adjust chunk size based on your system's memory and performance
-// Typical values: 1000-10000 for moderate systems, 10000-50000 for high-end systems
-:param chunk_size => 5000;
-
-// Method 1: Basic Chunking with CALL IN TRANSACTIONS
-// ================================================
-
-// Get total row count first (optional, for progress tracking)
+// Import CSV data and create nodes and relationships
+// Replace 'file:///path/to/your/output.csv' with your actual file path
 LOAD CSV WITH HEADERS FROM 'file:///output.csv' AS row
 WITH row WHERE row.time IS NOT NULL
-RETURN count(*) as total_rows;
-
-// Import data in chunks using CALL IN TRANSACTIONS (Neo4j 4.4+)
-CALL {
-    LOAD CSV WITH HEADERS FROM 'file:///output.csv' AS row
-    WITH row WHERE row.time IS NOT NULL
-    
-    // Create or merge User nodes
-    MERGE (source_user:User {name: row.`source user@domain`})
-    MERGE (dest_user:User {name: row.`destination user@domain`})
-    
-    // Create or merge Computer nodes
-    MERGE (source_comp:Computer {name: row.`source computer`})
-    MERGE (dest_comp:Computer {name: row.`destination computer`})
-    
-    // Create AuthEvent node with all properties
-    CREATE (auth:AuthEvent {
-        time: toInteger(row.time),
-        auth_type: row.`authentication type`,
-        logon_type: row.`logon type`,
-        auth_orientation: row.`authentication orientation`,
-        success: row.`success/failure`,
-        is_redteam: toBoolean(toInteger(row.label)),
-        timestamp: datetime({epochSeconds: toInteger(row.time)})
-    })
-    
-    // Create relationships
-    CREATE (source_user)-[:AUTHENTICATED_FROM]->(source_comp)
-    CREATE (source_user)-[:AUTHENTICATED_TO]->(dest_comp)
-    CREATE (source_comp)-[:AUTH_SOURCE]->(auth)
-    CREATE (dest_comp)-[:AUTH_DEST]->(auth)
-    CREATE (source_user)-[:INITIATED]->(auth)
-    CREATE (dest_user)-[:RECEIVED]->(auth)
-    
-} IN TRANSACTIONS OF 5000 ROWS;
-
-// Method 2: Manual Chunking with SKIP and LIMIT (Universal Approach)
-// =================================================================
-
-// Step 1: Process first chunk (rows 0-4999)
-LOAD CSV WITH HEADERS FROM 'file:///output.csv' AS row
-WITH row WHERE row.time IS NOT NULL
-WITH row, toInteger(row.time) as time_int
-ORDER BY time_int
-SKIP 0 LIMIT 5000
 
 // Create or merge User nodes
 MERGE (source_user:User {name: row.`source user@domain`})
@@ -74,13 +23,13 @@ MERGE (dest_comp:Computer {name: row.`destination computer`})
 
 // Create AuthEvent node with all properties
 CREATE (auth:AuthEvent {
-    time: time_int,
+    time: toInteger(row.time),
     auth_type: row.`authentication type`,
     logon_type: row.`logon type`,
     auth_orientation: row.`authentication orientation`,
     success: row.`success/failure`,
     is_redteam: toBoolean(toInteger(row.label)),
-    timestamp: datetime({epochSeconds: time_int})
+    timestamp: datetime({epochSeconds: toInteger(row.time)})
 })
 
 // Create relationships
@@ -91,261 +40,14 @@ CREATE (dest_comp)-[:AUTH_DEST]->(auth)
 CREATE (source_user)-[:INITIATED]->(auth)
 CREATE (dest_user)-[:RECEIVED]->(auth);
 
-// Step 2: Process second chunk (rows 5000-9999)
-LOAD CSV WITH HEADERS FROM 'file:///output.csv' AS row
-WITH row WHERE row.time IS NOT NULL
-WITH row, toInteger(row.time) as time_int
-ORDER BY time_int
-SKIP 5000 LIMIT 5000
-
-// Create or merge User nodes
-MERGE (source_user:User {name: row.`source user@domain`})
-MERGE (dest_user:User {name: row.`destination user@domain`})
-
-// Create or merge Computer nodes
-MERGE (source_comp:Computer {name: row.`source computer`})
-MERGE (dest_comp:Computer {name: row.`destination computer`})
-
-// Create AuthEvent node with all properties
-CREATE (auth:AuthEvent {
-    time: time_int,
-    auth_type: row.`authentication type`,
-    logon_type: row.`logon type`,
-    auth_orientation: row.`authentication orientation`,
-    success: row.`success/failure`,
-    is_redteam: toBoolean(toInteger(row.label)),
-    timestamp: datetime({epochSeconds: time_int})
-})
-
-// Create relationships
-CREATE (source_user)-[:AUTHENTICATED_FROM]->(source_comp)
-CREATE (source_user)-[:AUTHENTICATED_TO]->(dest_comp)
-CREATE (source_comp)-[:AUTH_SOURCE]->(auth)
-CREATE (dest_comp)-[:AUTH_DEST]->(auth)
-CREATE (source_user)-[:INITIATED]->(auth)
-CREATE (dest_user)-[:RECEIVED]->(auth);
-
-// Continue with additional chunks as needed...
-// Step 3: SKIP 10000 LIMIT 5000
-// Step 4: SKIP 15000 LIMIT 5000
-// etc.
-
-// Method 3: Simple Batch Processing (Works in all Neo4j versions)
-// =============================================================
-
-// Create a simple counter to track progress
-CREATE (counter:ProcessingCounter {processed: 0, chunk_size: 5000});
-
-// Process data in batches - you'll need to run this multiple times
-// changing the SKIP value each time: 0, 5000, 10000, 15000, etc.
-
-MATCH (counter:ProcessingCounter)
-LOAD CSV WITH HEADERS FROM 'file:///output.csv' AS row
-WITH row, counter WHERE row.time IS NOT NULL
-WITH row, counter, toInteger(row.time) as time_int
-ORDER BY time_int
-SKIP 0 LIMIT 5000  // Change this for each batch: 0, 5000, 10000, etc.
-
-// Create or merge User nodes
-MERGE (source_user:User {name: row.`source user@domain`})
-MERGE (dest_user:User {name: row.`destination user@domain`})
-
-// Create or merge Computer nodes  
-MERGE (source_comp:Computer {name: row.`source computer`})
-MERGE (dest_comp:Computer {name: row.`destination computer`})
-
-// Create AuthEvent node with all properties
-CREATE (auth:AuthEvent {
-    time: time_int,
-    auth_type: row.`authentication type`,
-    logon_type: row.`logon type`,
-    auth_orientation: row.`authentication orientation`,
-    success: row.`success/failure`,
-    is_redteam: toBoolean(toInteger(row.label)),
-    timestamp: datetime({epochSeconds: time_int})
-})
-
-// Create relationships
-CREATE (source_user)-[:AUTHENTICATED_FROM]->(source_comp)
-CREATE (source_user)-[:AUTHENTICATED_TO]->(dest_comp)
-CREATE (source_comp)-[:AUTH_SOURCE]->(auth)
-CREATE (dest_comp)-[:AUTH_DEST]->(auth)
-CREATE (source_user)-[:INITIATED]->(auth)
-CREATE (dest_user)-[:RECEIVED]->(auth)
-
-WITH counter, count(*) as batch_count
-SET counter.processed = counter.processed + batch_count
-RETURN counter.processed as total_processed, batch_count;
-
-// Method 4: Optimized Chunking with Batch Operations
-// =================================================
-
-// Configuration
-:param batch_size => 1000;  // Smaller batches for node creation
-:param chunk_size => 5000;  // Larger chunks for relationship creation
-
-// Step 1: Create all User nodes in batches
-CALL {
-    LOAD CSV WITH HEADERS FROM 'file:///output.csv' AS row
-    WITH row WHERE row.time IS NOT NULL
-    WITH DISTINCT row.`source user@domain` as user_name
-    WHERE user_name IS NOT NULL
-    
-    CALL {
-        WITH user_name
-        MERGE (u:User {name: user_name})
-    } IN TRANSACTIONS OF 1000 ROWS
-}
-
-CALL {
-    LOAD CSV WITH HEADERS FROM 'file:///output.csv' AS row
-    WITH row WHERE row.time IS NOT NULL
-    WITH DISTINCT row.`destination user@domain` as user_name
-    WHERE user_name IS NOT NULL
-    
-    CALL {
-        WITH user_name
-        MERGE (u:User {name: user_name})
-    } IN TRANSACTIONS OF 1000 ROWS
-}
-
-// Step 2: Create all Computer nodes in batches
-CALL {
-    LOAD CSV WITH HEADERS FROM 'file:///output.csv' AS row
-    WITH row WHERE row.time IS NOT NULL
-    WITH DISTINCT row.`source computer` as comp_name
-    WHERE comp_name IS NOT NULL
-    
-    CALL {
-        WITH comp_name
-        MERGE (c:Computer {name: comp_name})
-    } IN TRANSACTIONS OF 1000 ROWS
-}
-
-CALL {
-    LOAD CSV WITH HEADERS FROM 'file:///output.csv' AS row
-    WITH row WHERE row.time IS NOT NULL
-    WITH DISTINCT row.`destination computer` as comp_name
-    WHERE comp_name IS NOT NULL
-    
-    CALL {
-        WITH comp_name
-        MERGE (c:Computer {name: comp_name})
-    } IN TRANSACTIONS OF 1000 ROWS
-}
-
-// Step 3: Create AuthEvent nodes and relationships in chunks
-CALL {
-    LOAD CSV WITH HEADERS FROM 'file:///output.csv' AS row
-    WITH row WHERE row.time IS NOT NULL
-    
-    CALL {
-        WITH row
-        // Match existing nodes
-        MATCH (source_user:User {name: row.`source user@domain`})
-        MATCH (dest_user:User {name: row.`destination user@domain`})
-        MATCH (source_comp:Computer {name: row.`source computer`})
-        MATCH (dest_comp:Computer {name: row.`destination computer`})
-        
-        // Create AuthEvent node
-        CREATE (auth:AuthEvent {
-            time: toInteger(row.time),
-            auth_type: row.`authentication type`,
-            logon_type: row.`logon type`,
-            auth_orientation: row.`authentication orientation`,
-            success: row.`success/failure`,
-            is_redteam: toBoolean(toInteger(row.label)),
-            timestamp: datetime({epochSeconds: toInteger(row.time)})
-        })
-        
-        // Create relationships
-        CREATE (source_user)-[:AUTHENTICATED_FROM]->(source_comp)
-        CREATE (source_user)-[:AUTHENTICATED_TO]->(dest_comp)
-        CREATE (source_comp)-[:AUTH_SOURCE]->(auth)
-        CREATE (dest_comp)-[:AUTH_DEST]->(auth)
-        CREATE (source_user)-[:INITIATED]->(auth)
-        CREATE (dest_user)-[:RECEIVED]->(auth)
-        
-    } IN TRANSACTIONS OF 2000 ROWS
-}
-
-// Method 5: Shell Script Approach for Very Large Files
-// ===================================================
-// For extremely large files, consider using a shell script to split the CSV first:
-
-/*
-# Split CSV into chunks (run this in your shell before importing)
-split -l 10000 output.csv chunk_
-for file in chunk_*; do
-  mv "$file" "$file.csv"
-done
-
-# Then import each chunk separately:
-# chunk_aa.csv, chunk_ab.csv, etc.
-*/
-
-// Import individual chunk files
-LOAD CSV WITH HEADERS FROM 'file:///chunk_aa.csv' AS row
-WITH row WHERE row.time IS NOT NULL
-// ... same import logic as above
-
-// Monitoring and Progress Queries
-// ==============================
-
-// Check current import progress
-MATCH (counter:ProcessingCounter)
-RETURN counter.processed as total_processed, counter.chunk_size;
-
-// Monitor transaction log size during import
-CALL dbms.queryJmx("org.neo4j:instance=kernel#0,name=Transactions") 
-YIELD attributes
-RETURN attributes.NumberOfOpenTransactions, attributes.PeakNumberOfConcurrentTransactions;
-
-// Check memory usage
-CALL dbms.queryJmx("java.lang:type=Memory") 
-YIELD attributes
-RETURN attributes.HeapMemoryUsage, attributes.NonHeapMemoryUsage;
-
-// Verify chunk processing completion
-MATCH (a:AuthEvent)
-RETURN count(a) as total_events,
-       min(a.time) as earliest_event,
-       max(a.time) as latest_event;
-
-// Performance Tuning Settings (add to neo4j.conf)
-// ==============================================
-/*
-# Increase memory allocation
-dbms.memory.heap.initial_size=2G
-dbms.memory.heap.max_size=4G
-dbms.memory.pagecache.size=2G
-
-# Optimize for write performance
-dbms.transaction.concurrent.maximum=1000
-dbms.memory.transaction.global_max_size=1G
-dbms.memory.transaction.max_size=10M
-
-# Disable unnecessary features during import
-dbms.security.auth_enabled=false  # Temporarily, re-enable after import
-dbms.logs.query.enabled=false     # Disable query logging during import
-*/
-
-// Cleanup and Optimization After Import
+// Additional useful queries for analysis
 // ====================================
 
-// Cleanup after chunked import
-// ============================
-
-// Remove processing counter
-MATCH (counter:ProcessingCounter) DELETE counter;
-
-// Update statistics for query planner
-CALL db.stats.collect();
-
-// Additional useful queries for analysis (same as original)
-// =======================================================
-
 // Query 1: Get overall statistics
+MATCH (s:ImportStats)
+RETURN s.total_events, s.redteam_events, s.benign_events;
+
+// Alternative if ImportStats doesn't exist:
 MATCH (a:AuthEvent)
 RETURN 
     count(a) as total_events,

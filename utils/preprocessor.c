@@ -10,8 +10,8 @@
 #define MAX_LINE_LENGTH 1024
 #define CHUNK_SIZE 1000000  // Process 1M lines at a time
 #define NUM_THREADS 15
-#define MAX_REDTEAM_EVENTS 100000
-#define MAX_COMPUTERS_LIMIT 50  // Limit to 300 unique computers
+#define MAX_REDTEAM_EVENTS 25
+#define MAX_COMPUTERS_LIMIT 25  // Limit to 300 unique computers
 
 // Structure to hold authentication data
 typedef struct {
