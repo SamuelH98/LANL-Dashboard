@@ -10,8 +10,8 @@
 #define MAX_LINE_LENGTH 1024
 #define CHUNK_SIZE 1000000  // Process 1M lines at a time
 #define NUM_THREADS 15
-#define MAX_REDTEAM_EVENTS 10
-#define MAX_COMPUTERS_LIMIT 10  // Limit to 300 unique computers
+#define MAX_REDTEAM_EVENTS 1000000
+#define MAX_COMPUTERS_LIMIT 10  // Limit to 10 unique computers (as per original code, not 300 from comment)
 
 // Structure to hold authentication data
 typedef struct {
@@ -63,6 +63,10 @@ static pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t match_mutex = PTHREAD_MUTEX_INITIALIZER;
 static computer_set_t global_computer_set = {.count = 0, .mutex = PTHREAD_MUTEX_INITIALIZER};
 
+// Time window for matching red team events (in seconds)
+// Auth event time must be >= rt_event.time AND <= rt_event.time + MATCH_TIME_WINDOW_SECONDS
+#define MATCH_TIME_WINDOW_SECONDS 5 
+
 // Function to trim whitespace
 char* trim(char* str) {
     char *end;
@@ -83,7 +87,6 @@ int contains_question_mark(const char* line) {
 int is_computer_allowed(const char* computer, computer_set_t* comp_set) {
     pthread_mutex_lock(&comp_set->mutex);
     
-    // Check if computer is already in the set
     for (int i = 0; i < comp_set->count; i++) {
         if (strcmp(comp_set->computers[i], computer) == 0) {
             pthread_mutex_unlock(&comp_set->mutex);
@@ -91,7 +94,6 @@ int is_computer_allowed(const char* computer, computer_set_t* comp_set) {
         }
     }
     
-    // If not in set and we haven't reached the limit, add it
     if (comp_set->count < MAX_COMPUTERS_LIMIT) {
         strncpy(comp_set->computers[comp_set->count], computer, 255);
         comp_set->computers[comp_set->count][255] = '\0';
@@ -101,7 +103,7 @@ int is_computer_allowed(const char* computer, computer_set_t* comp_set) {
     }
     
     pthread_mutex_unlock(&comp_set->mutex);
-    return 0;  // Computer limit reached and this computer is not in the allowed set
+    return 0;
 }
 
 // Function to add red team computers to the allowed set
@@ -109,7 +111,6 @@ void add_redteam_computers_to_set(computer_set_t* comp_set) {
     pthread_mutex_lock(&comp_set->mutex);
     
     for (int i = 0; i < redteam_count && comp_set->count < MAX_COMPUTERS_LIMIT; i++) {
-        // Add source computer if not already present
         int found_source = 0;
         for (int j = 0; j < comp_set->count; j++) {
             if (strcmp(comp_set->computers[j], redteam_events[i].source_computer) == 0) {
@@ -123,7 +124,9 @@ void add_redteam_computers_to_set(computer_set_t* comp_set) {
             comp_set->count++;
         }
         
-        // Add destination computer if not already present
+        // Ensure not to double-add if source and dest computers are the same and limit is tight
+        if (comp_set->count >= MAX_COMPUTERS_LIMIT) break;
+
         int found_dest = 0;
         for (int j = 0; j < comp_set->count; j++) {
             if (strcmp(comp_set->computers[j], redteam_events[i].dest_computer) == 0) {
@@ -144,26 +147,24 @@ void add_redteam_computers_to_set(computer_set_t* comp_set) {
 
 // Function to check if an auth event should be processed based on computer sampling
 int should_process_auth_event(auth_event_t* auth, computer_set_t* comp_set) {
-    // Check if either source or destination computer is in the allowed set
     return (is_computer_allowed(auth->source_computer, comp_set) || 
             is_computer_allowed(auth->dest_computer, comp_set));
 }
 
 // Function to parse authentication line
 int parse_auth_line(char* line, auth_event_t* event) {
-    // Skip lines containing question marks
     if (contains_question_mark(line)) {
         return 0;
     }
     
     char* token;
     char* line_copy = strdup(line);
+    if (!line_copy) { perror("strdup failed in parse_auth_line"); return 0; }
     int field = 0;
     
     token = strtok(line_copy, ",");
     while (token != NULL && field < 9) {
         token = trim(token);
-        
         switch(field) {
             case 0: event->time = atoi(token); break;
             case 1: strncpy(event->source_user, token, 255); event->source_user[255] = '\0'; break;
@@ -175,7 +176,6 @@ int parse_auth_line(char* line, auth_event_t* event) {
             case 7: strncpy(event->auth_orientation, token, 63); event->auth_orientation[63] = '\0'; break;
             case 8: strncpy(event->success, token, 15); event->success[15] = '\0'; break;
         }
-        
         token = strtok(NULL, ",");
         field++;
     }
@@ -186,26 +186,24 @@ int parse_auth_line(char* line, auth_event_t* event) {
 
 // Function to parse red team line
 int parse_redteam_line(char* line, redteam_event_t* event) {
-    // Skip lines containing question marks
     if (contains_question_mark(line)) {
         return 0;
     }
     
     char* token;
     char* line_copy = strdup(line);
+    if (!line_copy) { perror("strdup failed in parse_redteam_line"); return 0; }
     int field = 0;
     
     token = strtok(line_copy, ",");
     while (token != NULL && field < 4) {
         token = trim(token);
-        
         switch(field) {
             case 0: event->time = atoi(token); break;
             case 1: strncpy(event->user, token, 255); event->user[255] = '\0'; break;
             case 2: strncpy(event->source_computer, token, 255); event->source_computer[255] = '\0'; break;
             case 3: strncpy(event->dest_computer, token, 255); event->dest_computer[255] = '\0'; break;
         }
-        
         token = strtok(NULL, ",");
         field++;
     }
@@ -214,74 +212,66 @@ int parse_redteam_line(char* line, redteam_event_t* event) {
     return (field == 4) ? 1 : 0;
 }
 
-// Function to check if an auth event matches a red team event
-int is_redteam_event(auth_event_t* auth, redteam_event_t* redteam_events, int redteam_count) {
+// Function to check if an auth event matches a red team event (STRICTER VERSION)
+// An auth_event is considered a "red team event" if it directly corresponds
+// to a specific event listed in the redteam_events list, within a defined time window.
+int is_redteam_event(auth_event_t* auth, redteam_event_t* redteam_events_list, int redteam_count) {
     for (int i = 0; i < redteam_count; i++) {
-        // Check time match (exact match required)
-        if (auth->time != redteam_events[i].time) {
-            continue;
+        redteam_event_t* rt_event = &redteam_events_list[i];
+
+        // Criterion 1: Time match
+        // Auth event time must be >= red team event time AND <= red team event time + window.
+        if (! (auth->time >= rt_event->time && auth->time <= (rt_event->time + MATCH_TIME_WINDOW_SECONDS)) ) {
+            continue; // Time out of window for this red team event
         }
-        
-        // Case 1: Direct match - redteam user is the source user in auth event
-        if (strcmp(auth->source_user, redteam_events[i].user) == 0 &&
-            strcmp(auth->source_computer, redteam_events[i].source_computer) == 0 &&
-            strcmp(auth->dest_computer, redteam_events[i].dest_computer) == 0) {
-            return 1;
+
+        // Criterion 2: User match
+        // The redteam_event.user is the actor. In an auth_event, this typically corresponds to the source_user.
+        if (strcmp(auth->source_user, rt_event->user) != 0) {
+            continue; // User doesn't match
         }
-        
-        // Case 2: Reverse match - redteam user is the destination user in auth event
-        if (strcmp(auth->dest_user, redteam_events[i].user) == 0 &&
-            strcmp(auth->dest_computer, redteam_events[i].source_computer) == 0 &&
-            strcmp(auth->source_computer, redteam_events[i].dest_computer) == 0) {
-            return 1;
+
+        // Criterion 3: Source computer match
+        if (strcmp(auth->source_computer, rt_event->source_computer) != 0) {
+            continue; // Source computer doesn't match
         }
-        
-        // Case 3: Lateral movement - user authenticates TO a machine
-        if (strcmp(auth->source_user, redteam_events[i].user) == 0 &&
-            strcmp(auth->dest_computer, redteam_events[i].dest_computer) == 0) {
-            if (strcmp(auth->source_computer, redteam_events[i].source_computer) == 0) {
-                return 1;
-            }
+
+        // Criterion 4: Destination computer match
+        if (strcmp(auth->dest_computer, rt_event->dest_computer) != 0) {
+            continue; // Destination computer doesn't match
         }
-        
-        // Case 4: Time and computer match with user involved
-        if ((strcmp(auth->source_computer, redteam_events[i].source_computer) == 0 &&
-             strcmp(auth->dest_computer, redteam_events[i].dest_computer) == 0) ||
-            (strcmp(auth->source_computer, redteam_events[i].dest_computer) == 0 &&
-             strcmp(auth->dest_computer, redteam_events[i].source_computer) == 0)) {
-            
-            if (strcmp(auth->source_user, redteam_events[i].user) == 0 ||
-                strcmp(auth->dest_user, redteam_events[i].user) == 0) {
-                return 1;
-            }
-        }
+
+        // If all criteria are met, this auth_event is a direct match for rt_event[i].
+        printf("STRICT MATCH FOUND: AuthEvent(T:%d,U:%s,SC:%s,DC:%s) matches RedTeamEvent(Index:%d,T:%d,U:%s,SC:%s,DC:%s)\n",
+               auth->time, auth->source_user, auth->source_computer, auth->dest_computer,
+               i, rt_event->time, rt_event->user, rt_event->source_computer, rt_event->dest_computer);
+        return 1; // Mark as red team
     }
-    return 0;
+    return 0; // No specific red team event fully matched this auth event
 }
+
 
 // Thread worker function
 void* process_auth_events(void* arg) {
     thread_data_t* data = (thread_data_t*)arg;
-    char output_line[2048];
-    int processed = 0;
-    int matches_found = 0;
-    int skipped_sampling = 0;
+    char output_line[2048]; // Increased buffer size for safety
+    int processed_by_thread = 0;
+    int matches_found_by_thread = 0;
+    // int skipped_sampling_by_thread = 0; // If you need to track this per thread
     
     for (int i = data->start_idx; i < data->end_idx; i++) {
         auth_event_t* event = &data->auth_events[i];
         
-        // Check if this event should be processed based on computer sampling
         if (!should_process_auth_event(event, data->computer_set)) {
-            skipped_sampling++;
+            // skipped_sampling_by_thread++;
             continue;
         }
         
         int is_redteam = is_redteam_event(event, data->redteam_events, data->redteam_count);
         if (is_redteam) {
-            matches_found++;
+            matches_found_by_thread++;
         }
         
-        // Create output line with individual columns (not quoted as single feature)
         snprintf(output_line, sizeof(output_line), 
                 "%d,%s,%s,%s,%s,%s,%s,%s,%s,%d\n",
                 event->time,
@@ -295,19 +285,21 @@ void* process_auth_events(void* arg) {
                 event->success,
                 is_redteam);
         
-        // Write to output file (thread-safe)
         pthread_mutex_lock(data->file_mutex);
         fprintf(data->output_file, "%s", output_line);
         pthread_mutex_unlock(data->file_mutex);
         
-        processed++;
+        processed_by_thread++;
     }
     
-    // Update global match counter
     pthread_mutex_lock(data->match_mutex);
-    *(data->total_matches) += matches_found;
+    *(data->total_matches) += matches_found_by_thread;
     pthread_mutex_unlock(data->match_mutex);
     
+    // Optional: Log per-thread stats, e.g. using data->thread_id
+    // printf("Thread %d: Processed %d events, found %d matches, skipped %d due to sampling.\n", 
+    //        data->thread_id, processed_by_thread, matches_found_by_thread, skipped_sampling_by_thread);
+
     return NULL;
 }
 
@@ -326,7 +318,7 @@ int load_redteam_events(const char* filename) {
     printf("Loading red team events from %s...\n", filename);
     
     while (fgets(line, sizeof(line), file) && redteam_count < MAX_REDTEAM_EVENTS) {
-        if (strlen(line) > 1) {  // Skip empty lines
+        if (strlen(line) > 1) { 
             if (contains_question_mark(line)) {
                 skipped_lines++;
                 continue;
@@ -340,26 +332,38 @@ int load_redteam_events(const char* filename) {
     fclose(file);
     printf("Loaded %d red team events\n", redteam_count);
     if (skipped_lines > 0) {
-        printf("Skipped %d lines containing '?' characters\n", skipped_lines);
+        printf("Skipped %d lines containing '?' characters from red team file\n", skipped_lines);
     }
     
-    // Add red team computers to the allowed set
     add_redteam_computers_to_set(&global_computer_set);
     
     return redteam_count;
 }
 
 // Function to process a chunk of authentication events
-int process_chunk(auth_event_t* chunk, int chunk_size, FILE* output_file, int* total_matches) {
-    // Create threads for processing this chunk
+int process_chunk(auth_event_t* chunk, int chunk_current_size, FILE* output_file, int* total_matches) {
     pthread_t threads[NUM_THREADS];
     thread_data_t thread_data[NUM_THREADS];
-    int events_per_thread = chunk_size / NUM_THREADS;
     
+    if (chunk_current_size == 0) return 1; // Nothing to process
+
+    int events_per_thread = chunk_current_size / NUM_THREADS;
+    int remaining_events = chunk_current_size % NUM_THREADS;
+    int current_event_idx = 0;
+
     for (int i = 0; i < NUM_THREADS; i++) {
         thread_data[i].auth_events = chunk;
-        thread_data[i].start_idx = i * events_per_thread;
-        thread_data[i].end_idx = (i == NUM_THREADS - 1) ? chunk_size : (i + 1) * events_per_thread;
+        thread_data[i].start_idx = current_event_idx;
+        int events_for_this_thread = events_per_thread + (i < remaining_events ? 1 : 0);
+        thread_data[i].end_idx = current_event_idx + events_for_this_thread;
+        current_event_idx += events_for_this_thread;
+
+        if (events_for_this_thread == 0 && thread_data[i].start_idx == chunk_current_size) {
+            // No events for this thread if chunk_current_size < NUM_THREADS and all events assigned
+            thread_data[i].start_idx = 0; // Avoid invalid range for loop in thread
+            thread_data[i].end_idx = 0;   // No work for this thread
+        }
+        
         thread_data[i].redteam_events = redteam_events;
         thread_data[i].redteam_count = redteam_count;
         thread_data[i].output_file = output_file;
@@ -369,15 +373,21 @@ int process_chunk(auth_event_t* chunk, int chunk_size, FILE* output_file, int* t
         thread_data[i].match_mutex = &match_mutex;
         thread_data[i].computer_set = &global_computer_set;
         
-        if (pthread_create(&threads[i], NULL, process_auth_events, &thread_data[i]) != 0) {
-            printf("Error creating thread %d\n", i);
-            return 0;
+        if (events_for_this_thread > 0) { // Only create thread if there's work
+            if (pthread_create(&threads[i], NULL, process_auth_events, &thread_data[i]) != 0) {
+                printf("Error creating thread %d: %s\n", i, strerror(errno));
+                // Handle error: potentially join already created threads and then return 0
+                for (int k=0; k<i; ++k) pthread_join(threads[k], NULL);
+                return 0;
+            }
         }
     }
     
-    // Wait for all threads to complete
     for (int i = 0; i < NUM_THREADS; i++) {
-        pthread_join(threads[i], NULL);
+        // Only join threads that were actually created (had work)
+        if (thread_data[i].end_idx > thread_data[i].start_idx) {
+             pthread_join(threads[i], NULL);
+        }
     }
     
     return 1;
@@ -398,67 +408,67 @@ int process_auth_file_chunked(const char* auth_filename, const char* output_file
         return 0;
     }
     
-    // Write CSV header with individual columns
     fprintf(output_file, "time,source user@domain,destination user@domain,source computer,destination computer,authentication type,logon type,authentication orientation,success/failure,label\n");
     
-    // Allocate memory for one chunk
     auth_event_t* chunk = malloc(CHUNK_SIZE * sizeof(auth_event_t));
     if (!chunk) {
-        printf("Error: Cannot allocate memory for chunk\n");
+        printf("Error: Cannot allocate memory for chunk: %s\n", strerror(errno));
         fclose(auth_file);
         fclose(output_file);
         return 0;
     }
     
     char line[MAX_LINE_LENGTH];
-    int total_processed = 0;
+    int total_processed_events = 0;
     int total_matches = 0;
-    int chunk_count = 0;
-    int current_chunk_size = 0;
-    int skipped_lines = 0;
+    int chunk_num = 0;
+    int current_chunk_idx = 0;
+    int skipped_auth_lines = 0;
     
     printf("Processing authentication file in chunks of %d events...\n", CHUNK_SIZE);
     printf("Computer limit: %d unique computers\n", MAX_COMPUTERS_LIMIT);
+    printf("Red team event match window: %d seconds\n", MATCH_TIME_WINDOW_SECONDS);
     
     while (fgets(line, sizeof(line), auth_file)) {
-        if (strlen(line) > 1) {  // Skip empty lines
+        if (strlen(line) > 1) { 
             if (contains_question_mark(line)) {
-                skipped_lines++;
+                skipped_auth_lines++;
                 continue;
             }
-            if (parse_auth_line(line, &chunk[current_chunk_size])) {
-                current_chunk_size++;
+            if (parse_auth_line(line, &chunk[current_chunk_idx])) {
+                current_chunk_idx++;
                 
-                // If chunk is full, process it
-                if (current_chunk_size >= CHUNK_SIZE) {
-                    chunk_count++;
-                    printf("\nProcessing chunk %d (%d events)...\n", chunk_count, current_chunk_size);
+                if (current_chunk_idx >= CHUNK_SIZE) {
+                    chunk_num++;
+                    printf("\nProcessing chunk %d (%d events)...\n", chunk_num, current_chunk_idx);
                     
-                    if (!process_chunk(chunk, current_chunk_size, output_file, &total_matches)) {
-                        printf("Error processing chunk %d\n", chunk_count);
+                    if (!process_chunk(chunk, current_chunk_idx, output_file, &total_matches)) {
+                        printf("Error processing chunk %d\n", chunk_num);
                         free(chunk);
                         fclose(auth_file);
                         fclose(output_file);
                         return 0;
                     }
                     
-                    total_processed += current_chunk_size;
-                    printf("Chunk %d completed. Total processed: %d, Total matches: %d\n", 
-                           chunk_count, total_processed, total_matches);
+                    total_processed_events += current_chunk_idx;
+                    printf("Chunk %d completed. Total events processed so far: %d, Total matches: %d\n", 
+                           chunk_num, total_processed_events, total_matches);
                     printf("Unique computers tracked: %d\n", global_computer_set.count);
                     
-                    current_chunk_size = 0;  // Reset for next chunk
+                    current_chunk_idx = 0; 
                 }
+            } else {
+                // Consider logging lines that fail parsing if not just due to '?'
+                // printf("Warning: Failed to parse auth line: %s", line); 
             }
         }
     }
     
-    // Process the final partial chunk if it exists
-    if (current_chunk_size > 0) {
-        chunk_count++;
-        printf("\nProcessing final chunk %d (%d events)...\n", chunk_count, current_chunk_size);
+    if (current_chunk_idx > 0) {
+        chunk_num++;
+        printf("\nProcessing final chunk %d (%d events)...\n", chunk_num, current_chunk_idx);
         
-        if (!process_chunk(chunk, current_chunk_size, output_file, &total_matches)) {
+        if (!process_chunk(chunk, current_chunk_idx, output_file, &total_matches)) {
             printf("Error processing final chunk\n");
             free(chunk);
             fclose(auth_file);
@@ -466,9 +476,9 @@ int process_auth_file_chunked(const char* auth_filename, const char* output_file
             return 0;
         }
         
-        total_processed += current_chunk_size;
-        printf("Final chunk completed. Total processed: %d, Total matches: %d\n", 
-               total_processed, total_matches);
+        total_processed_events += current_chunk_idx;
+        printf("Final chunk completed. Total events processed: %d, Total matches: %d\n", 
+               total_processed_events, total_matches);
     }
     
     free(chunk);
@@ -476,15 +486,15 @@ int process_auth_file_chunked(const char* auth_filename, const char* output_file
     fclose(output_file);
     
     printf("\nChunked processing completed!\n");
-    printf("Total chunks processed: %d\n", chunk_count);
-    printf("Total events processed: %d\n", total_processed);
-    printf("Total matches found: %d\n", total_matches);
+    printf("Total chunks processed: %d\n", chunk_num);
+    printf("Total auth events processed and written: %d\n", total_processed_events);
+    printf("Total matches found (label=1): %d\n", total_matches);
     printf("Unique computers tracked: %d (limit: %d)\n", global_computer_set.count, MAX_COMPUTERS_LIMIT);
-    if (skipped_lines > 0) {
-        printf("Total lines skipped (containing '?'): %d\n", skipped_lines);
+    if (skipped_auth_lines > 0) {
+        printf("Total auth lines skipped (containing '?'): %d\n", skipped_auth_lines);
     }
     
-    return total_processed;
+    return total_processed_events;
 }
 
 int main(int argc, char* argv[]) {
@@ -505,32 +515,45 @@ int main(int argc, char* argv[]) {
     printf("Threads: %d\n", NUM_THREADS);
     printf("Chunk size: %d events\n", CHUNK_SIZE);
     printf("Computer limit: %d unique computers\n", MAX_COMPUTERS_LIMIT);
-    printf("Note: Lines containing '?' will be skipped\n");
-    printf("Note: All red team computers will be preserved\n\n");
+    printf("Red team event match window: +/- %d seconds from auth event time.\n", MATCH_TIME_WINDOW_SECONDS);
+    printf("Note: Lines containing '?' will be skipped from both auth and redteam files.\n");
+    printf("Note: Red team computers are prioritized for tracking.\n\n");
     
-    clock_t start_time = clock();
+    clock_t start_time_wc = clock(); // Wall-clock time for process
+    time_t start_time_rt; time(&start_time_rt); // Real time
     
-    // Load red team events first
     if (!load_redteam_events(redteam_filename)) {
+        // Error message already printed in load_redteam_events
         return 1;
     }
-    
-    // Process authentication events in chunks
-    int processed = process_auth_file_chunked(auth_filename, output_filename);
-    if (!processed) {
-        return 1;
+    if (redteam_count == 0) {
+        printf("Warning: No red team events loaded. All output labels will be 0.\n");
     }
     
-    clock_t end_time = clock();
-    double elapsed_time = ((double)(end_time - start_time)) / CLOCKS_PER_SEC;
+    int processed_count = process_auth_file_chunked(auth_filename, output_filename);
+    // process_auth_file_chunked will return 0 on critical error, non-zero for count otherwise.
+    // If it's 0 because the file was empty, that's fine. If it's 0 due to error, message printed.
+
+    clock_t end_time_wc = clock();
+    time_t end_time_rt; time(&end_time_rt);
+    double elapsed_wc_time = ((double)(end_time_wc - start_time_wc)) / CLOCKS_PER_SEC;
+    double elapsed_rt_time = difftime(end_time_rt, start_time_rt);
     
-    printf("\nProcessing completed successfully!\n");
-    printf("Total events processed: %d\n", processed);
-    printf("Red team events: %d\n", redteam_count);
-    printf("Unique computers tracked: %d\n", global_computer_set.count);
-    printf("Processing time: %.2f seconds\n", elapsed_time);
-    printf("Average speed: %.0f events/second\n", processed / elapsed_time);
+    printf("\nOverall processing summary:\n");
+    printf("Total authentication events processed and written: %d\n", processed_count);
+    printf("Red team definition events loaded: %d\n", redteam_count);
+    printf("Unique computers tracked: %d (Limit: %d)\n", global_computer_set.count, MAX_COMPUTERS_LIMIT);
+    printf("Wall-clock processing time: %.2f seconds\n", elapsed_wc_time);
+    printf("Real time elapsed: %.2f seconds\n", elapsed_rt_time);
+    if (elapsed_rt_time > 0.01) { // Avoid division by zero or tiny numbers
+      printf("Approximate average speed: %.0f events/second (based on real time)\n", processed_count / elapsed_rt_time);
+    }
     printf("Output saved to: %s\n", output_filename);
     
+    // Clean up mutexes (optional for globals at program exit, but good practice)
+    pthread_mutex_destroy(&file_mutex);
+    pthread_mutex_destroy(&match_mutex);
+    pthread_mutex_destroy(&global_computer_set.mutex);
+
     return 0;
 }
