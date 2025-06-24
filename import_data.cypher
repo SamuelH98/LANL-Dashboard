@@ -147,20 +147,22 @@ RETURN c.name,
        count(DISTINCT benign) as benign_events
 ORDER BY redteam_events DESC, benign_events DESC;
 
-// Query 15: Time-based clustering of authentication events
+// Query 15: Time-based clustering of authentication events (FIXED)
 MATCH (a:AuthEvent)
-WITH a.time - (a.time % 3600) as hour_bucket, a.is_redteam, count(*) as events
-RETURN hour_bucket, 
-       sum(CASE WHEN a.is_redteam THEN events ELSE 0 END) as redteam_in_hour,
-       sum(CASE WHEN NOT a.is_redteam THEN events ELSE 0 END) as benign_in_hour
+WITH a.time - (a.time % 3600) as hour_bucket, a.is_redteam as is_redteam
+WITH hour_bucket, 
+     sum(CASE WHEN is_redteam THEN 1 ELSE 0 END) as redteam_in_hour,
+     sum(CASE WHEN NOT is_redteam THEN 1 ELSE 0 END) as benign_in_hour
+RETURN hour_bucket, redteam_in_hour, benign_in_hour
 ORDER BY hour_bucket;
 
 // Performance optimization queries
 // ===============================
 
-// Create additional indexes if needed for better query performance
-CREATE INDEX user_auth_idx IF NOT EXISTS FOR ()-[r:INITIATED]-() ON (r);
-CREATE INDEX comp_auth_idx IF NOT EXISTS FOR ()-[r:AUTH_DEST]-() ON (r);
+// Note: Neo4j doesn't support indexes on relationships in the same way as nodes
+// Instead, we can create indexes on node properties that are frequently used in relationship queries
+CREATE INDEX user_name_idx IF NOT EXISTS FOR (u:User) ON (u.name);
+CREATE INDEX computer_name_idx IF NOT EXISTS FOR (c:Computer) ON (c.name);
 
 // Query to check database statistics
 CALL db.stats.retrieve('GRAPH COUNTS');

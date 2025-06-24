@@ -10,7 +10,12 @@ ENV NEO4J_server_bolt_listen__address=0.0.0.0:7687
 ENV NEO4J_initial_dbms_default__database=authdata
 
 # Increase memory settings
-ENV NEO4J_dbms_memory_transaction_total_max=8G
+ENV NEO4J_server_memory_heap_max_size=12G
+ENV NEO4J_dbms_memory_transaction_total_max=12G
+
+
+# Use G1GC
+#ENV NEO4J_dbms_jvm_additional=-XX:+UseG1GC
 
 # Enable APOC plugin
 ENV NEO4J_PLUGINS=["apoc"]
