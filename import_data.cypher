@@ -1,172 +1,201 @@
-// Neo4j Cypher Import Script for Authentication Data
-// ================================================
+// Optimized Neo4j Cypher Import Script for Authentication Data
+// ==========================================================
 
-// First, create constraints and indexes for better performance
+// Step 1: Create constraints and indexes FIRST (before any data import)
 CREATE CONSTRAINT user_id IF NOT EXISTS FOR (u:User) REQUIRE u.name IS UNIQUE;
 CREATE CONSTRAINT computer_id IF NOT EXISTS FOR (c:Computer) REQUIRE c.name IS UNIQUE;
 CREATE INDEX auth_time_idx IF NOT EXISTS FOR (a:AuthEvent) ON (a.time);
 CREATE INDEX auth_success_idx IF NOT EXISTS FOR (a:AuthEvent) ON (a.success);
 CREATE INDEX auth_redteam_idx IF NOT EXISTS FOR (a:AuthEvent) ON (a.is_redteam);
+CREATE INDEX user_name_idx IF NOT EXISTS FOR (u:User) ON (u.name);
+CREATE INDEX computer_name_idx IF NOT EXISTS FOR (c:Computer) ON (c.name);
 
-// Import CSV data and create nodes and relationships
-// Replace 'file:///path/to/your/output.csv' with your actual file path
+// Step 2: Import in batches with modern transaction syntax
+// Replace 'file:///output.csv' with your actual file path
+LOAD CSV WITH HEADERS FROM 'file:///output.csv' AS row
+WITH row WHERE row.time IS NOT NULL AND trim(row.time) <> ''
+CALL {
+  WITH row
+  // Create/merge nodes efficiently (fewer MERGE operations)
+  MERGE (source_user:User {name: trim(row.`source user@domain`)})
+  MERGE (dest_user:User {name: trim(row.`destination user@domain`)})
+  MERGE (source_comp:Computer {name: trim(row.`source computer`)})
+  MERGE (dest_comp:Computer {name: trim(row.`destination computer`)})
+
+  // Create AuthEvent with relationships in one go
+  CREATE (auth:AuthEvent {
+      time: toInteger(row.time),
+      auth_type: trim(row.`authentication type`),
+      logon_type: trim(row.`logon type`),
+      auth_orientation: trim(row.`authentication orientation`),
+      success: trim(row.`success/failure`),
+      is_redteam: toBoolean(toInteger(row.label)),
+      timestamp: datetime({epochSeconds: toInteger(row.time)})
+  })
+
+  // Simplified relationship model (fewer relationships per event)
+  CREATE (source_user)-[:AUTHENTICATED {event_time: toInteger(row.time)}]->(dest_comp)
+  CREATE (auth)-[:FROM_USER]->(source_user)
+  CREATE (auth)-[:TO_USER]->(dest_user)
+  CREATE (auth)-[:FROM_COMPUTER]->(source_comp)
+  CREATE (auth)-[:TO_COMPUTER]->(dest_comp)
+} IN TRANSACTIONS OF 1000 ROWS;
+
+// Alternative approach for very large datasets: Split into multiple transactions
+// ===========================================================================
+
+// Step 2a: Create Users first
 LOAD CSV WITH HEADERS FROM 'file:///output.csv' AS row
 WITH row WHERE row.time IS NOT NULL
+CALL {
+  WITH row
+  MERGE (source_user:User {name: trim(row.`source user@domain`)})
+  MERGE (dest_user:User {name: trim(row.`destination user@domain`)})
+} IN TRANSACTIONS OF 1000 ROWS;
 
-// Create or merge User nodes
-MERGE (source_user:User {name: row.`source user@domain`})
-MERGE (dest_user:User {name: row.`destination user@domain`})
+// Step 2b: Create Computers
+LOAD CSV WITH HEADERS FROM 'file:///output.csv' AS row
+WITH row WHERE row.time IS NOT NULL
+CALL {
+  WITH row
+  MERGE (source_comp:Computer {name: trim(row.`source computer`)})
+  MERGE (dest_comp:Computer {name: trim(row.`destination computer`)})
+} IN TRANSACTIONS OF 1000 ROWS;
 
-// Create or merge Computer nodes
-MERGE (source_comp:Computer {name: row.`source computer`})
-MERGE (dest_comp:Computer {name: row.`destination computer`})
+// Step 2c: Create AuthEvents and relationships
+LOAD CSV WITH HEADERS FROM 'file:///output.csv' AS row
+WITH row WHERE row.time IS NOT NULL
+CALL {
+  WITH row
+  MATCH (source_user:User {name: trim(row.`source user@domain`)})
+  MATCH (dest_user:User {name: trim(row.`destination user@domain`)})
+  MATCH (source_comp:Computer {name: trim(row.`source computer`)})
+  MATCH (dest_comp:Computer {name: trim(row.`destination computer`)})
 
-// Create AuthEvent node with all properties
-CREATE (auth:AuthEvent {
-    time: toInteger(row.time),
-    auth_type: row.`authentication type`,
-    logon_type: row.`logon type`,
-    auth_orientation: row.`authentication orientation`,
-    success: row.`success/failure`,
-    is_redteam: toBoolean(toInteger(row.label)),
-    timestamp: datetime({epochSeconds: toInteger(row.time)})
-})
+  CREATE (auth:AuthEvent {
+      time: toInteger(row.time),
+      auth_type: trim(row.`authentication type`),
+      logon_type: trim(row.`logon type`),
+      auth_orientation: trim(row.`authentication orientation`),
+      success: trim(row.`success/failure`),
+      is_redteam: toBoolean(toInteger(row.label)),
+      timestamp: datetime({epochSeconds: toInteger(row.time)})
+  })
 
-// Create relationships
-CREATE (source_user)-[:AUTHENTICATED_FROM]->(source_comp)
-CREATE (source_user)-[:AUTHENTICATED_TO]->(dest_comp)
-CREATE (source_comp)-[:AUTH_SOURCE]->(auth)
-CREATE (dest_comp)-[:AUTH_DEST]->(auth)
-CREATE (source_user)-[:INITIATED]->(auth)
-CREATE (dest_user)-[:RECEIVED]->(auth);
+  CREATE (source_user)-[:AUTHENTICATED {event_time: toInteger(row.time)}]->(dest_comp)
+  CREATE (auth)-[:FROM_USER]->(source_user)
+  CREATE (auth)-[:TO_USER]->(dest_user)
+  CREATE (auth)-[:FROM_COMPUTER]->(source_comp)
+  CREATE (auth)-[:TO_COMPUTER]->(dest_comp)
+} IN TRANSACTIONS OF 1000 ROWS;
 
-// Additional useful queries for analysis
-// ====================================
+// Memory and performance optimization notes
+// ========================================
+// Neo4j memory settings should be configured in neo4j.conf file:
+// - dbms.memory.heap.max_size=8G
+// - dbms.memory.pagecache.size=4G
+// - dbms.memory.transaction.global_max_size=1G
 
-// Query 1: Get overall statistics
-MATCH (s:ImportStats)
-RETURN s.total_events, s.redteam_events, s.benign_events;
+// Check memory usage during import (if available)
+// CALL dbms.queryJmx('java.lang:type=Memory') YIELD attributes
+// RETURN attributes.HeapMemoryUsage;
 
-// Alternative if ImportStats doesn't exist:
+// Optimized Analysis Queries
+// =========================
+
+// Query 1: Overall statistics (optimized)
 MATCH (a:AuthEvent)
 RETURN 
     count(a) as total_events,
     sum(CASE WHEN a.is_redteam THEN 1 ELSE 0 END) as redteam_events,
     sum(CASE WHEN NOT a.is_redteam THEN 1 ELSE 0 END) as benign_events;
 
-// Query 2: Count events by authentication type
+// Query 2: Authentication types (with index usage)
 MATCH (a:AuthEvent)
+WHERE a.auth_type IS NOT NULL
 RETURN a.auth_type, count(*) as count
 ORDER BY count DESC;
 
-// Query 3: Find all red team events
+// Query 3: Red team events (uses index)
 MATCH (a:AuthEvent)
 WHERE a.is_redteam = true
 RETURN a.time, a.auth_type, a.success
-ORDER BY a.time;
+ORDER BY a.time
+LIMIT 1000;
 
-// Query 4: Red team user activity
-MATCH (a:AuthEvent)<-[:INITIATED]-(u:User)
+// Query 4: Red team user activity (optimized with relationship traversal)
+MATCH (a:AuthEvent)-[:FROM_USER]->(u:User)
 WHERE a.is_redteam = true
 RETURN u.name, count(*) as activity_count
-ORDER BY activity_count DESC;
+ORDER BY activity_count DESC
+LIMIT 50;
 
-// Query 5: Find users with most computer connections
-MATCH (u:User)-[:AUTHENTICATED_FROM]->(c:Computer)
+// Query 5: User computer connections (simplified)
+MATCH (u:User)-[r:AUTHENTICATED]->(c:Computer)
 RETURN u.name, count(DISTINCT c) as computer_count
-ORDER BY computer_count DESC LIMIT 10;
+ORDER BY computer_count DESC 
+LIMIT 10;
 
-// Query 6: Find computers with most authentication events
-MATCH (a:AuthEvent)-[:AUTH_DEST]->(c:Computer)
+// Query 6: Most targeted computers
+MATCH (a:AuthEvent)-[:TO_COMPUTER]->(c:Computer)
 RETURN c.name, count(a) as auth_count
-ORDER BY auth_count DESC LIMIT 10;
+ORDER BY auth_count DESC 
+LIMIT 10;
 
-// Query 7: Events by hour of day
+// Query 7: Events by hour (optimized)
 MATCH (a:AuthEvent)
+WHERE a.timestamp IS NOT NULL
 RETURN a.timestamp.hour as hour, count(*) as event_count
 ORDER BY hour;
 
-// Query 8: Find authentication patterns around red team events
-MATCH (rt:AuthEvent {is_redteam: true})
-MATCH (other:AuthEvent)
-WHERE abs(other.time - rt.time) <= 300  // Within 5 minutes
-AND other <> rt
-RETURN rt.time, count(other) as nearby_events
-ORDER BY nearby_events DESC;
-
-// Query 9: Network analysis - find critical computers
-MATCH (c:Computer)
-OPTIONAL MATCH (c)<-[:AUTH_SOURCE]-(a1:AuthEvent)
-OPTIONAL MATCH (c)<-[:AUTH_DEST]-(a2:AuthEvent)
-RETURN c.name, 
-       count(DISTINCT a1) as outgoing_auths,
-       count(DISTINCT a2) as incoming_auths,
-       count(DISTINCT a1) + count(DISTINCT a2) as total_auths
-ORDER BY total_auths DESC LIMIT 20;
-
-// Query 10: Lateral movement detection
-MATCH (u:User)-[:INITIATED]->(a1:AuthEvent)-[:AUTH_DEST]->(c1:Computer)
-MATCH (u)-[:INITIATED]->(a2:AuthEvent)-[:AUTH_SOURCE]->(c1)
-MATCH (a2)-[:AUTH_DEST]->(c2:Computer)
+// Query 8: Lateral movement detection (optimized with time window)
+MATCH (u:User)<-[:FROM_USER]-(a1:AuthEvent)-[:TO_COMPUTER]->(c1:Computer)
+MATCH (u)<-[:FROM_USER]-(a2:AuthEvent)-[:FROM_COMPUTER]->(c1)
+MATCH (a2)-[:TO_COMPUTER]->(c2:Computer)
 WHERE a2.time > a1.time 
-AND a2.time - a1.time <= 3600  // Within 1 hour
-AND c1 <> c2
-RETURN u.name, c1.name as intermediate_computer, c2.name as target_computer,
+  AND a2.time - a1.time <= 3600
+  AND c1 <> c2
+RETURN u.name, c1.name as intermediate, c2.name as target,
        a1.time as first_auth, a2.time as second_auth,
-       (a2.time - a1.time) as time_diff_seconds
-ORDER BY time_diff_seconds;
+       (a2.time - a1.time) as time_diff
+ORDER BY time_diff
+LIMIT 100;
 
-// Query 11: Failed authentication analysis
-MATCH (a:AuthEvent)
+// Query 9: Failed authentication patterns
+MATCH (a:AuthEvent)-[:FROM_USER]->(u:User)
+MATCH (a)-[:TO_COMPUTER]->(c:Computer)
 WHERE a.success = 'Failure'
-MATCH (a)<-[:INITIATED]-(u:User)
-MATCH (a)-[:AUTH_DEST]->(c:Computer)
 RETURN u.name, c.name, count(*) as failed_attempts
-ORDER BY failed_attempts DESC LIMIT 20;
+ORDER BY failed_attempts DESC 
+LIMIT 20;
 
-// Query 12: Red team timeline analysis
-MATCH (a:AuthEvent {is_redteam: true})
-MATCH (a)<-[:INITIATED]-(u:User)
-MATCH (a)-[:AUTH_SOURCE]->(sc:Computer)
-MATCH (a)-[:AUTH_DEST]->(dc:Computer)
+// Query 10: Red team timeline (limited results)
+MATCH (a:AuthEvent)-[:FROM_USER]->(u:User)
+MATCH (a)-[:FROM_COMPUTER]->(sc:Computer)
+MATCH (a)-[:TO_COMPUTER]->(dc:Computer)
+WHERE a.is_redteam = true
 RETURN a.time, u.name as user, sc.name as source, dc.name as dest, a.success
-ORDER BY a.time;
+ORDER BY a.time
+LIMIT 1000;
 
-// Query 13: Authentication type patterns for red team vs benign
-MATCH (a:AuthEvent)
-RETURN a.auth_type, a.is_redteam,
-       count(*) as count,
-       avg(toFloat(a.time)) as avg_time
-ORDER BY a.auth_type, a.is_redteam;
+// Performance monitoring queries
+// =============================
 
-// Query 14: Find computers involved in both red team and benign activities
-MATCH (rt:AuthEvent {is_redteam: true})-[:AUTH_DEST]->(c:Computer)
-MATCH (benign:AuthEvent {is_redteam: false})-[:AUTH_DEST]->(c)
-RETURN c.name,
-       count(DISTINCT rt) as redteam_events,
-       count(DISTINCT benign) as benign_events
-ORDER BY redteam_events DESC, benign_events DESC;
+// Check query performance
+PROFILE MATCH (a:AuthEvent) WHERE a.is_redteam = true RETURN count(a);
 
-// Query 15: Time-based clustering of authentication events (FIXED)
-MATCH (a:AuthEvent)
-WITH a.time - (a.time % 3600) as hour_bucket, a.is_redteam as is_redteam
-WITH hour_bucket, 
-     sum(CASE WHEN is_redteam THEN 1 ELSE 0 END) as redteam_in_hour,
-     sum(CASE WHEN NOT is_redteam THEN 1 ELSE 0 END) as benign_in_hour
-RETURN hour_bucket, redteam_in_hour, benign_in_hour
-ORDER BY hour_bucket;
+// Monitor active queries (if available)
+// CALL dbms.listQueries() YIELD query, elapsedTimeMillis, status
+// WHERE elapsedTimeMillis > 1000
+// RETURN query, elapsedTimeMillis, status;
 
-// Performance optimization queries
-// ===============================
+// Check database size and node counts
+MATCH (n) RETURN labels(n), count(n);
 
-// Note: Neo4j doesn't support indexes on relationships in the same way as nodes
-// Instead, we can create indexes on node properties that are frequently used in relationship queries
-CREATE INDEX user_name_idx IF NOT EXISTS FOR (u:User) ON (u.name);
-CREATE INDEX computer_name_idx IF NOT EXISTS FOR (c:Computer) ON (c.name);
+// Check relationship counts
+MATCH ()-[r]->() RETURN type(r), count(r);
 
-// Query to check database statistics
-CALL db.stats.retrieve('GRAPH COUNTS');
-
-// Query to show constraint and index information
-SHOW CONSTRAINTS;
-SHOW INDEXES;
+// Simple memory status check
+CALL dbms.listConfig() YIELD name, value 
+WHERE name CONTAINS 'memory' 
+RETURN name, value;
