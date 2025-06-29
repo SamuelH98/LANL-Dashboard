@@ -30,7 +30,7 @@ class ADAnalysisDependencies:
 class SecurityAnalysis(BaseModel):
     """Structured response for security analysis"""
     findings: List[str] = Field(description="List of security findings and observations")
-    suspicious_activities: List[Dict[str, Any]] = Field(description="Suspicious activities detected")
+    suspicious_activities: List[str] = Field(description="Suspicious activities detected as text descriptions")
     recommendations: List[str] = Field(description="Security recommendations")
     summary: str = Field(description="Executive summary of the analysis")
     risk_level: str = Field(description="Overall risk level: LOW, MEDIUM, HIGH, CRITICAL")
@@ -42,8 +42,8 @@ class Neo4jConnection:
         self.driver = GraphDatabase.driver(
             os.getenv("NEO4J_URI", "bolt://localhost:7687"),
             auth=basic_auth(
-                "neo4j",
-                "password123"
+                os.getenv("NEO4J_USERNAME", "neo4j"),
+                os.getenv("NEO4J_PASSWORD", "password123")
             )
         )
     
@@ -61,9 +61,9 @@ class Neo4jConnection:
         except Exception as e:
             return {"success": False, "records": [], "error": str(e)}
 
-# Initialize the AD Red Team Analysis agent
+# Initialize the AD Red Team Analysis agent with correct model
 ad_agent = Agent[ADAnalysisDependencies, SecurityAnalysis](
-    model="google-gla:gemini-2.5-pro-preview-05-06",
+    model='gemini-1.5-flash',  # Use string format for model
     deps_type=ADAnalysisDependencies,
     output_type=SecurityAnalysis,
     system_prompt=(
