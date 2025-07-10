@@ -1,3 +1,6 @@
 pydantic-ai 
 neo4j
 python-dotenv
+plotly
+gradio
+litellm
