@@ -24,6 +24,7 @@ from litellm import completion
 
 # Load environment variables
 load_dotenv()
+litellm._turn_on_debug()
 
 @dataclass
 class ADAnalysisDependencies:
