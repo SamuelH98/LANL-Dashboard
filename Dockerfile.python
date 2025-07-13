@@ -1,0 +1,23 @@
+# Dockerfile.python - for use with docker-compose
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application files
+COPY src/ ./src/
+
+# Expose port for Gradio
+EXPOSE 7860
+
+# Default command (can be overridden in docker-compose)
+CMD ["python", "src/main.py"]

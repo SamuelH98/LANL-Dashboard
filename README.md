@@ -72,17 +72,21 @@ With `output.csv` present, use Docker Compose to build and run the Neo4j contain
 ```bash
 docker-compose up --build
 ```
-or 
+Or run in detached mode:
 ```bash
-docker build -t neo4j-auth .
-
-docker run -d \
-  --name neo4j-auth-data \
-  -p 7474:7474 -p 7687:7687 \
-  -v $(pwd)/output.csv:/var/lib/neo4j/import/output.csv:ro \
-  neo4j-auth
+docker-compose up -d --build
 ```
-This will start the Neo4j service on ports `7474` (HTTP) and `7687` (Bolt). The import process can take some time; monitor the Docker logs for progress.
+
+View logs:
+```bash
+# All services
+docker-compose logs -f
+
+# Specific service
+docker-compose logs -f python-app
+docker-compose logs -f neo4j
+docker-compose logs -f ollama
+```
 
 ### 4. Install Python Dependencies
 
