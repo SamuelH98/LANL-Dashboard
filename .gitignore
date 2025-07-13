@@ -1,4 +1,5 @@
 utils/output.csv
 auth.txt
 redteam.txt
-.venv
+**.venv
+**__pycache__

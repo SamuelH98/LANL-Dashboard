@@ -72,6 +72,16 @@ With `output.csv` present, use Docker Compose to build and run the Neo4j contain
 ```bash
 docker-compose up --build
 ```
+or 
+```bash
+docker build -t neo4j-auth .
+
+docker run -d \
+  --name neo4j-auth-data \
+  -p 7474:7474 -p 7687:7687 \
+  -v $(pwd)/output.csv:/var/lib/neo4j/import/output.csv:ro \
+  neo4j-auth
+```
 This will start the Neo4j service on ports `7474` (HTTP) and `7687` (Bolt). The import process can take some time; monitor the Docker logs for progress.
 
 ### 4. Install Python Dependencies
@@ -87,7 +97,7 @@ pip install -r requirements.txt
 Once the dependencies are installed and the Neo4j container shows that it is ready, start the Gradio web application.
 
 ```bash
-python agent.py
+python src/main.py
 ```
 You can now access the system via your web browser:
 
