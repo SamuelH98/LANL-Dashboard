@@ -62,7 +62,7 @@ class ADAnalysisAgent:
     """Lightweight AD analysis agent using LiteLLM with Gemma-3"""
 
     def __init__(self):
-        self.model = "ollama/gemma3"  # Gemma-3 model, ensure Ollama is running this model
+        self.model = "ollama/gemma3:1b"  # Gemma-3 model, ensure Ollama is running this model
         self.system_prompt = (
             "You are a cybersecurity expert specializing in Active Directory security analysis and red team detection. "
             "Analyze authentication events, user behavior, and computer interactions to identify potential security threats. "
