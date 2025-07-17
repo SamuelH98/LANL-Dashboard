@@ -14,10 +14,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application files
+COPY .env .
 COPY src/ ./src/
-
-# Expose port for Gradio
-EXPOSE 7860
 
 # Default command (can be overridden in docker-compose)
 CMD ["python", "src/main.py"]
