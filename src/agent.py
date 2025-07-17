@@ -63,7 +63,7 @@ class Neo4jConnection:
 class OllamaModelManager:
     """Manages Ollama models - pull, list, and select"""
     
-    def __init__(self, ollama_url: str = "http://host.docker.internal:11434"):
+    def __init__(self, ollama_url: str = os.getenv("OLLAMA_API_BASE", "http://ollama:11434")):
         self.ollama_url = ollama_url
         self.available_models = []
     
