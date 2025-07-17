@@ -5,130 +5,149 @@ Gradio UI components for the Active Directory Red Team Analysis Dashboard
 import asyncio
 import plotly.graph_objects as go
 import gradio as gr
+import networkx as nx
 
 from agent import (
-    check_neo4j_status, check_llm_status, ad_agent,
+    check_neo4j_status, check_llm_status, check_ollama_status, ad_agent,
     analyze_authentication_patterns, analyze_user_behavior,
-    detect_lateral_movement, get_hourly_data, run_analysis
+    detect_lateral_movement, get_hourly_data, run_analysis,
+    get_available_models, pull_model, get_recommended_models,
+    set_current_model, get_current_model, get_graph_for_visualization
 )
 
 # Status functions
 async def get_status_html() -> str:
     """Generate HTML status display"""
-    neo4j_ok, llm_ok = await asyncio.gather(
+    neo4j_ok, llm_ok, ollama_ok = await asyncio.gather(
         asyncio.to_thread(check_neo4j_status), 
-        check_llm_status()
+        check_llm_status(),
+        check_ollama_status()
     )
+    
     neo4j_status = "🟢 Neo4j Connected" if neo4j_ok else "🔴 Neo4j Disconnected"
-    llm_status = f"🟢 {ad_agent.model} Ready" if llm_ok else f"🔴 {ad_agent.model} Not Ready"
+    llm_status = f"🟢 {ad_agent.get_current_model()} Ready" if llm_ok else f"🔴 {ad_agent.get_current_model()} Not Ready"
+    ollama_status = "🟢 Ollama Service Running" if ollama_ok else "🔴 Ollama Service Down"
     
     return f"""
     <div style="padding: 10px; background: #1F2937; border: 1px solid #374151; border-radius: 8px; color: #D1D5DB;">
         <h4>System Status</h4>
         <p style="margin: 5px 0;">{neo4j_status}</p>
+        <p style="margin: 5px 0;">{ollama_status}</p>
         <p style="margin: 5px 0;">{llm_status}</p>
         <p style="margin: 5px 0;">📊 Dashboard Active</p>
     </div>
     """
 
-# Visualization functions with dark theme
-def create_auth_success_chart(auth_data):
-    """Create authentication success rate pie chart"""
-    fig = go.Figure()
-    if auth_data:
-        labels = ['Successful', 'Failed']
-        values = [
-            sum(r['event_count'] for r in auth_data if r['success_status']),
-            sum(r['event_count'] for r in auth_data if not r['success_status'])
-        ]
-        fig.add_trace(go.Pie(labels=labels, values=values, hole=.4, marker_colors=['#22c55e', '#ef4444']))
+# Model management functions
+async def refresh_available_models():
+    """Refresh the list of available models"""
+    models = await get_available_models()
+    return gr.Dropdown(choices=models, value=get_current_model() if get_current_model() in models else (models if models else None))
+
+async def pull_model_handler(model_name: str):
+    """Handle model pulling with progress feedback"""
+    if not model_name.strip():
+        return "❌ Please enter a model name", gr.Dropdown()
     
-    fig.update_layout(
-        title="Authentication Success Rate",
-        template="plotly_dark",
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
-        font=dict(color='#E5E7EB'),
-        legend=dict(font=dict(color='#E5E7EB'))
-    )
+    result = await pull_model(model_name.strip())
+    
+    if result["success"]:
+        # Refresh available models after successful pull
+        models = await get_available_models()
+        dropdown_update = gr.Dropdown(choices=models, value=model_name.strip())
+        return f"✅ {result['message']}", dropdown_update
+    else:
+        return f"❌ {result['message']}", gr.Dropdown()
+
+def switch_model_handler(model_name: str):
+    """Handle model switching"""
+    if not model_name:
+        return "❌ Please select a model", get_status_html()
+    
+    try:
+        set_current_model(model_name)
+        return f"✅ Switched to model: {model_name}", get_status_html()
+    except Exception as e:
+        return f"❌ Error switching model: {str(e)}", get_status_html()
+
+# Visualization functions
+async def create_network_visualization():
+    """Create a Plotly network graph from Neo4j data."""
+    graph_data = await get_graph_for_visualization()
+    if not graph_data["success"] or not graph_data["data"]:
+        return go.Figure()
+
+    G = nx.Graph()
+    for record in graph_data["data"]:
+        user = record['u']
+        computer = record['c']
+        auth_event = record['ae']
+        
+        G.add_node(user.id, label=user['name'], type='User')
+        G.add_node(computer.id, label=computer['name'], type='Computer')
+        G.add_edge(user.id, auth_event.id)
+        G.add_edge(auth_event.id, computer.id)
+
+    pos = nx.spring_layout(G)
+    
+    edge_x = []
+    edge_y = []
+    for edge in G.edges():
+        x0, y0 = pos[edge]
+        x1, y1 = pos[edge]
+        edge_x.extend([x0, x1, None])
+        edge_y.extend([y0, y1, None])
+
+    edge_trace = go.Scatter(
+        x=edge_x, y=edge_y,
+        line=dict(width=0.5, color='#888'),
+        hoverinfo='none',
+        mode='lines')
+
+    node_x = []
+    node_y = []
+    node_text = []
+    node_color = []
+    for node in G.nodes():
+        x, y = pos[node]
+        node_x.append(x)
+        node_y.append(y)
+        node_text.append(G.nodes[node]['label'])
+        node_color.append('skyblue' if G.nodes[node]['type'] == 'User' else 'lightgreen')
+
+    node_trace = go.Scatter(
+        x=node_x, y=node_y,
+        mode='markers',
+        hoverinfo='text',
+        text=node_text,
+        marker=dict(
+            showscale=False,
+            color=node_color,
+            size=10,
+            line_width=2))
+
+    fig = go.Figure(data=[edge_trace, node_trace],
+             layout=go.Layout(
+                title='<br>Active Directory Object Interactions',
+                titlefont_size=16,
+                showlegend=False,
+                hovermode='closest',
+                margin=dict(b=20,l=5,r=5,t=40),
+                annotations=[ dict(
+                    text="Users and Computers activity",
+                    showarrow=False,
+                    xref="paper", yref="paper",
+                    x=0.005, y=-0.002 ) ],
+                xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+                yaxis=dict(showgrid=False, zeroline=False, showticklabels=False))
+                )
     return fig
 
-def create_hourly_activity_chart(hourly_data):
-    """Create hourly activity bar chart"""
-    fig = go.Figure()
-    if hourly_data:
-        hours = [item['hour'] for item in hourly_data]
-        activity = [item['event_count'] for item in hourly_data]
-        fig.add_trace(go.Bar(x=hours, y=activity))
-    
-    fig.update_layout(
-        title="Hourly Authentication Activity",
-        xaxis_title="Hour",
-        yaxis_title="Events",
-        template="plotly_dark",
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
-        font=dict(color='#E5E7EB')
-    )
-    return fig
-
-def create_user_activity_chart(user_data):
-    """Create user activity bar chart"""
-    fig = go.Figure()
-    if user_data:
-        users = [item['username'] for item in user_data[:10]]
-        events = [item['total_events'] for item in user_data[:10]]
-        fig.add_trace(go.Bar(x=users, y=events))
-    
-    fig.update_layout(
-        title="Top 10 Active Users",
-        xaxis_title="User",
-        yaxis_title="Events",
-        template="plotly_dark",
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
-        font=dict(color='#E5E7EB')
-    )
-    return fig
-
-def create_lateral_movement_chart(lateral_data):
-    """Create lateral movement risk chart"""
-    fig = go.Figure()
-    if lateral_data:
-        users = [item['username'] for item in lateral_data[:10]]
-        computers = [item['computer_count'] for item in lateral_data[:10]]
-        fig.add_trace(go.Bar(x=users, y=computers, marker_color='crimson'))
-    
-    fig.update_layout(
-        title="Potential Lateral Movement",
-        xaxis_title="User",
-        yaxis_title="# Computers Accessed",
-        template="plotly_dark",
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
-        font=dict(color='#E5E7EB')
-    )
-    return fig
 
 # Dashboard update functions
-async def update_dashboard_and_status():
-    """Update all dashboard components and system status"""
-    (auth_res, user_res, lateral_res, hourly_res), status_html = await asyncio.gather(
-        asyncio.gather(
-            analyze_authentication_patterns(),
-            analyze_user_behavior(),
-            detect_lateral_movement(),
-            get_hourly_data()
-        ),
-        get_status_html()
-    )
-    
-    auth_chart = create_auth_success_chart(auth_res.get("data", {}).get("auth_statistics"))
-    user_chart = create_user_activity_chart(user_res.get("data", {}).get("most_active_users"))
-    lateral_chart = create_lateral_movement_chart(lateral_res.get("data", {}).get("multi_computer_access"))
-    hourly_chart = create_hourly_activity_chart(hourly_res.get("records"))
-    
-    return auth_chart, user_chart, lateral_chart, hourly_chart, status_html
+async def update_status_only():
+    """Update only the system status"""
+    return await get_status_html()
 
 async def analyze_security_threats(analysis_type: str, progress=gr.Progress(track_tqdm=True)):
     """Run security threat analysis based on selected type"""
@@ -155,7 +174,7 @@ async def analyze_security_threats(analysis_type: str, progress=gr.Progress(trac
     }
     
     func, query, *data_funcs = analysis_map.get(analysis_type)
-    progress(0.5, desc="Querying database and running LLM analysis...")
+    progress(0.5, desc=f"Querying database and running analysis with {get_current_model()}...")
     result = await func(func, query, *data_funcs)
     progress(1, desc="Analysis Complete!")
     return result
@@ -164,27 +183,21 @@ def create_gradio_interface():
     """Create and configure the Gradio interface"""
     with gr.Blocks(title="AD Red Team Analysis Dashboard", theme=gr.themes.Default()) as demo:
         gr.HTML("""
-        <div style="text-align: center; max-width: 900px; margin: 20px auto;">
+        <div style="text-align: center; max-width: 1200px; margin: 20px auto;">
             <h1 style="font-size: 2.5rem;">🔒 Active Directory Red Team Analysis Dashboard</h1>
-            <p style="color: #9CA3AF; font-size: 1.1rem;">Real-time security threat detection</p>
+            <p style="color: #9CA3AF; font-size: 1.1rem;">Real-time security threat detection with AI-powered analysis and graph visualization</p>
         </div>
         """)
 
         with gr.Row():
-            with gr.Column(scale=3):
-                gr.HTML("<h2 style='text-align: left;'>📊 Security Visualizations</h2>")
-                
-                with gr.Row():
-                    auth_plot = gr.Plot(label="Authentication Success Rate")
-                    user_plot = gr.Plot(label="Top Active Users")
-                
-                with gr.Row():
-                    lateral_plot = gr.Plot(label="Lateral Movement Risk")
-                    hourly_plot = gr.Plot(label="Hourly Activity")
-                
-                refresh_btn = gr.Button("🔄 Refresh Dashboard & Status", variant="secondary")
-
             with gr.Column(scale=2):
+                gr.HTML("<h2 style='text-align: left;'>🌐 AD Graph Visualization</h2>")
+                
+                vis_plot = gr.Plot(label="Network Graph")
+                
+                refresh_vis_btn = gr.Button("🔄 Refresh Visualization", variant="secondary")
+
+            with gr.Column(scale=3):
                 gr.HTML("<h2 style='text-align: left;'>🔍 Security Analysis</h2>")
                 
                 analysis_dropdown = gr.Dropdown(
@@ -201,23 +214,105 @@ def create_gradio_interface():
                     elem_classes="styled-box"
                 )
                 
+                # Model Management Section
+                gr.HTML("<h2 style='text-align: left;'>🤖 Model Management</h2>")
+                
+                with gr.Row():
+                    with gr.Column():
+                        available_models = gr.Dropdown(
+                            label="Available Models",
+                            choices=[],
+                            value=None,
+                            info="Select from installed models"
+                        )
+                        
+                        with gr.Row():
+                            refresh_models_btn = gr.Button("🔄 Refresh Models", size="sm")
+                            switch_model_btn = gr.Button("🔀 Switch Model", size="sm", variant="secondary")
+                
+                with gr.Row():
+                    with gr.Column():
+                        recommended_models = gr.Dropdown(
+                            label="Recommended Models",
+                            choices=get_recommended_models(),
+                            value="gemma2:2b",
+                            info="Popular models for security analysis"
+                        )
+                        
+                        custom_model = gr.Textbox(
+                            label="Custom Model",
+                            placeholder="e.g., llama3.1:8b, mistral:7b",
+                            info="Enter any Ollama model name"
+                        )
+                        
+                        with gr.Row():
+                            pull_recommended_btn = gr.Button("📥 Pull Recommended", size="sm", variant="primary")
+                            pull_custom_btn = gr.Button("📥 Pull Custom", size="sm", variant="primary")
+                
+                model_status = gr.Markdown(
+                    label="Model Status",
+                    value="*Model management status will appear here...*"
+                )
+                
                 status_output = gr.HTML(label="System Status")
 
-        # Event handlers
+        # Event handlers for analysis
         analyze_btn.click(
             fn=analyze_security_threats,
             inputs=[analysis_dropdown],
             outputs=[analysis_output]
         )
         
-        refresh_btn.click(
-            fn=update_dashboard_and_status,
-            outputs=[auth_plot, user_plot, lateral_plot, hourly_plot, status_output]
+        refresh_vis_btn.click(
+            fn=create_network_visualization,
+            outputs=[vis_plot]
         )
         
+        # Event handlers for model management
+        refresh_models_btn.click(
+            fn=refresh_available_models,
+            outputs=[available_models]
+        )
+        
+        switch_model_btn.click(
+            fn=lambda model: asyncio.run(asyncio.gather(
+                asyncio.to_thread(switch_model_handler, model),
+                get_status_html()
+            )),
+            inputs=[available_models],
+            outputs=[model_status, status_output]
+        )
+        
+        pull_recommended_btn.click(
+            fn=lambda model: asyncio.run(pull_model_handler(model)),
+            inputs=[recommended_models],
+            outputs=[model_status, available_models]
+        )
+        
+        pull_custom_btn.click(
+            fn=lambda model: asyncio.run(pull_model_handler(model)),
+            inputs=[custom_model],
+            outputs=[model_status, available_models]
+        )
+        
+        # Initialize dashboard and models on load
+        async def init_dashboard():
+            status_data, initial_plot, models = await asyncio.gather(
+                get_status_html(),
+                create_network_visualization(),
+                get_available_models()
+            )
+            
+            current_model = get_current_model()
+            model_dropdown = gr.Dropdown(
+                choices=models, 
+                value=current_model if current_model in models else (models if models else None)
+            )
+            return status_data, initial_plot, model_dropdown
+        
         demo.load(
-            fn=update_dashboard_and_status,
-            outputs=[auth_plot, user_plot, lateral_plot, hourly_plot, status_output]
+            fn=init_dashboard,
+            outputs=[status_output, vis_plot, available_models]
         )
     
     return demo

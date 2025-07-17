@@ -6,6 +6,9 @@ import asyncio
 from ui import create_gradio_interface
 
 def main():
+    """
+    Main function to start the AD Red Team Analysis Dashboard.
+    """
     print("Starting AD Red Team Analysis Dashboard...")
     print("Please ensure your Neo4j database and Ollama (with gemma3 model) are running.")
     print("Verify your .env file is configured with NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD.")

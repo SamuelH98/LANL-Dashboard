@@ -8,6 +8,8 @@ from typing import List, Dict, Any
 import os
 import json
 import asyncio
+import aiohttp
+import requests
 
 from pydantic import BaseModel, Field
 from neo4j import GraphDatabase, basic_auth
@@ -58,11 +60,57 @@ class Neo4jConnection:
         except Exception as e:
             return {"success": False, "records": [], "error": str(e)}
 
+class OllamaModelManager:
+    """Manages Ollama models - pull, list, and select"""
+    
+    def __init__(self, ollama_url: str = "http://host.docker.internal:11434"):
+        self.ollama_url = ollama_url
+        self.available_models = []
+    
+    async def get_available_models(self) -> List[str]:
+        """Get list of available models from Ollama"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{self.ollama_url}/api/tags") as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        models = [model["name"] for model in data.get("models", [])]
+                        self.available_models = models
+                        return models
+                    else:
+                        return []
+        except Exception as e:
+            print(f"Error getting available models: {e}")
+            return []
+    
+    async def pull_model(self, model_name: str) -> Dict[str, Any]:
+        """Pull a model from Ollama"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.ollama_url}/api/pull",
+                    json={"name": model_name}
+                ) as response:
+                    if response.status == 200:
+                        return {"success": True, "message": f"Model {model_name} pulled successfully"}
+                    else:
+                        error_text = await response.text()
+                        return {"success": False, "message": f"Failed to pull model: {error_text}"}
+        except Exception as e:
+            return {"success": False, "message": f"Error pulling model: {str(e)}"}
+    
+    def get_recommended_models(self) -> List[str]:
+        """Get list of recommended models for security analysis"""
+        return [
+            "gemma3:1b"
+        ]
+
 class ADAnalysisAgent:
-    """Lightweight AD analysis agent using LiteLLM with Gemma-3"""
+    """Lightweight AD analysis agent using LiteLLM with configurable Ollama models"""
 
     def __init__(self):
-        self.model = "ollama/gemma3:1b"  # Gemma-3 model, ensure Ollama is running this model
+        self.model = "ollama/gemma3:1b"  # Default model
+        self.model_manager = OllamaModelManager()
         self.system_prompt = (
             "You are a cybersecurity expert specializing in Active Directory security analysis and red team detection. "
             "Analyze authentication events, user behavior, and computer interactions to identify potential security threats. "
@@ -72,8 +120,19 @@ class ADAnalysisAgent:
             '{"findings": [], "suspicious_activities": [], "recommendations": [], "summary": "", "risk_level": ""}'
         )
 
+    def set_model(self, model_name: str):
+        """Set the current model for analysis"""
+        if not model_name.startswith("ollama/"):
+            model_name = f"ollama/{model_name}"
+        self.model = model_name
+        print(f"Model switched to: {self.model}")
+
+    def get_current_model(self) -> str:
+        """Get the current model name"""
+        return self.model.replace("ollama/", "")
+
     async def analyze(self, query: str, data: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Analyze security data using Gemma-3"""
+        """Analyze security data using the selected model"""
         try:
             context = f"\n\nData Context:\n{json.dumps(data, indent=2)}" if data else ""
             full_prompt = f"{query}{context}"
@@ -118,7 +177,52 @@ async def check_llm_status() -> bool:
     except Exception:
         return False
 
+async def check_ollama_status() -> bool:
+    """Check if Ollama service is running"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get("http://host.docker.internal:11434/api/tags", timeout=5) as response:
+                return response.status == 200
+    except Exception:
+        return False
+
+# Model management functions
+async def get_available_models() -> List[str]:
+    """Get list of available models from Ollama"""
+    return await ad_agent.model_manager.get_available_models()
+
+async def pull_model(model_name: str) -> Dict[str, Any]:
+    """Pull a model from Ollama registry"""
+    return await ad_agent.model_manager.pull_model(model_name)
+
+def get_recommended_models() -> List[str]:
+    """Get recommended models for security analysis"""
+    return ad_agent.model_manager.get_recommended_models()
+
+def set_current_model(model_name: str):
+    """Set the current model for analysis"""
+    ad_agent.set_model(model_name)
+
+def get_current_model() -> str:
+    """Get the current model name"""
+    return ad_agent.get_current_model()
+
 # Data collection functions
+async def get_graph_for_visualization():
+    """Fetch graph data for visualization"""
+    connection = Neo4jConnection()
+    try:
+        query = """
+        MATCH (u:User)-[r:FROM_USER]->(ae:AuthEvent)-[:TO_COMPUTER]->(c:Computer)
+        RETURN u, r, ae, c
+        LIMIT 100
+        """
+        graph_data = connection.execute_query(query)
+        return {"success": True, "data": graph_data["records"]}
+    finally:
+        connection.close()
+
+
 async def analyze_authentication_patterns():
     """Analyze authentication success/failure patterns"""
     connection = Neo4jConnection()
