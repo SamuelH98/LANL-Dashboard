@@ -63,7 +63,7 @@ class Neo4jConnection:
 class OllamaModelManager:
     """Manages Ollama models - pull, list, and select"""
     
-    def __init__(self, ollama_url: str = os.getenv("OLLAMA_API_BASE", "http://ollama:11434")):
+    def __init__(self, ollama_url: str = os.getenv("OLLAMA_API_BASE", "http://127.0.0.1:11434")):
         self.ollama_url = ollama_url
         self.available_models = []
     
@@ -88,8 +88,7 @@ class OllamaModelManager:
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    f"{self.ollama_url}/api/pull",
-                    json={"name": model_name}
+                    f"{self.ollama_url}/api/pull -d '{"name":{model_name}}'"
                 ) as response:
                     if response.status == 200:
                         return {"success": True, "message": f"Model {model_name} pulled successfully"}
