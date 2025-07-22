@@ -3,3 +3,4 @@ auth.txt
 redteam.txt
 **.venv
 **__pycache__
+**env

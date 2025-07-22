@@ -82,26 +82,70 @@ class OllamaModelManager:
         except Exception as e:
             print(f"Error getting available models: {e}")
             return []
-    
+
+    async def check_ollama_status(self) -> bool:
+        """Check if Ollama service is running"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                print(f"{self.ollama_url}/api/tags")
+                async with session.get(f"{self.ollama_url}/api/tags", timeout=5) as response:
+                    return response.status == 200
+        except Exception:
+            return False
+        
     async def pull_model(self, model_name: str) -> Dict[str, Any]:
-        """Pull a model from Ollama"""
+        """Pull a model from Ollama with proper NDJSON streaming handling"""
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    f"{self.ollama_url}/api/pull -d '{"name":{model_name}}'"
+                    f"{self.ollama_url}/api/pull",
+                    json={"name": model_name}
                 ) as response:
-                    if response.status == 200:
-                        return {"success": True, "message": f"Model {model_name} pulled successfully"}
-                    else:
+                    
+                    if response.status != 200:
                         error_text = await response.text()
-                        return {"success": False, "message": f"Failed to pull model: {error_text}"}
+                        return {
+                            "success": False,
+                            "message": f"Failed to pull model (HTTP {response.status}): {error_text}"
+                        }
+
+                    # Process streaming NDJSON response
+                    progress_updates = []
+                    async for line in response.content:
+                        if line.strip():  # Skip empty lines
+                            try:
+                                update = json.loads(line.decode())
+                                progress_updates.append(update)
+                                print(update)  # Optional: Log progress
+                            except json.JSONDecodeError:
+                                continue
+
+                    return {
+                        "success": True,
+                        "message": f"Model '{model_name}' pulled successfully",
+                        "updates": progress_updates  # All progress updates
+                    }
+
+        except aiohttp.ClientError as e:
+            return {
+                "success": False,
+                "message": f"Network error: {str(e)}"
+            }
         except Exception as e:
-            return {"success": False, "message": f"Error pulling model: {str(e)}"}
+            return {
+                "success": False,
+                "message": f"Unexpected error: {str(e)}"
+            }
     
     def get_recommended_models(self) -> List[str]:
         """Get list of recommended models for security analysis"""
         return [
-            "gemma3:1b"
+            "gemma3:4b",
+            "gemma3:1b",
+            "deepseek-r1:1.5b",
+            "deepseek-r1:7b",
+            "deepseek-r1:8b",
+            "qwen3:0.6b",
         ]
 
 class ADAnalysisAgent:
@@ -115,6 +159,7 @@ class ADAnalysisAgent:
             "Analyze authentication events, user behavior, and computer interactions to identify potential security threats. "
             "Focus on detecting lateral movement, privilege escalation, suspicious login patterns, and other red team tactics. "
             "Provide actionable security recommendations and assess risk levels appropriately. "
+            "Be specific about which users and authentication events you find specific and why?"
             "Be concise but thorough in your analysis. Format your response as a valid JSON object following this structure: "
             '{"findings": [], "suspicious_activities": [], "recommendations": [], "summary": "", "risk_level": ""}'
         )
@@ -176,14 +221,6 @@ async def check_llm_status() -> bool:
     except Exception:
         return False
 
-async def check_ollama_status() -> bool:
-    """Check if Ollama service is running"""
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get("http://host.docker.internal:11434/api/tags", timeout=5) as response:
-                return response.status == 200
-    except Exception:
-        return False
 
 # Model management functions
 async def get_available_models() -> List[str]:
@@ -244,7 +281,7 @@ async def analyze_user_behavior():
     """Analyze user activity patterns"""
     connection = Neo4jConnection()
     try:
-        active_users = connection.execute_query("""MATCH (u:User)-[:FROM_USER]->(ae:AuthEvent) RETURN u.name as username, count(ae) as total_events ORDER BY total_events DESC LIMIT 20""")
+        active_users = connection.execute_query("""MATCH (u:User)-[:FROM_USER]->(ae:AuthEvent) RETURN u.name as username, count(ae) as total_events ORDER BY total_events DESC LIMIT 100""")
         return {"success": True, "data": {"most_active_users": active_users["records"]}}
     finally:
         connection.close()

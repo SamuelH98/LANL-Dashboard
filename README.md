@@ -33,7 +33,7 @@ Before you begin, ensure you have the following installed and configured:
 4.  **Ollama:** Installed and running. [Ollama Website](https://ollama.com/)
 5.  **Gemma-3 Model:** Pull the required LLM model via Ollama.
     ```bash
-    ollama pull gemma:2b
+    ollama pull gemma:1b
     ```
 6.  **LANL Dataset:** Download `auth.txt` and `redteam.txt` into the project's root directory.
 
@@ -41,18 +41,8 @@ Before you begin, ensure you have the following installed and configured:
 
 Follow these steps to get the entire system running.
 
-### 1. Configure Environment Variables
 
-Create a `.env` file in the root of the project. This is used by the Python agent to connect to Neo4j.
-
-```env
-# .env file
-NEO4J_URI="bolt://localhost:7687"
-NEO4J_USERNAME="neo4j"
-NEO4J_PASSWORD="password123"
-```
-
-### 2. Compile and Run the Preprocessor
+### 1. Compile and Run the Preprocessor
 
 First, compile the C preprocessor. Then, run it to generate the `output.csv` file from the raw LANL data.
 
@@ -65,7 +55,7 @@ gcc -o preprocessor preprocessor.c -lpthread
 ```
 This creates the `output.csv` file required by the Neo4j importer.
 
-### 3. Start the Neo4j Database & Import Data
+### 2. Start the Neo4j Database & Import Data
 
 With `output.csv` present, use Docker Compose to build and run the Neo4j container. The container will automatically execute the `import_data.txt` script to create the graph.
 

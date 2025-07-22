@@ -7,21 +7,16 @@ import plotly.graph_objects as go
 import gradio as gr
 import networkx as nx
 
-from agent import (
-    check_neo4j_status, check_llm_status, check_ollama_status, ad_agent,
-    analyze_authentication_patterns, analyze_user_behavior,
-    detect_lateral_movement, get_hourly_data, run_analysis,
-    get_available_models, pull_model, get_recommended_models,
-    set_current_model, get_current_model, get_graph_for_visualization
-)
+from agent import *
 
 # Status functions
 async def get_status_html() -> str:
+
     """Generate HTML status display"""
     neo4j_ok, llm_ok, ollama_ok = await asyncio.gather(
         asyncio.to_thread(check_neo4j_status), 
         check_llm_status(),
-        check_ollama_status()
+        OllamaModelManager().check_ollama_status()
     )
     
     neo4j_status = "🟢 Neo4j Connected" if neo4j_ok else "🔴 Neo4j Disconnected"
@@ -49,15 +44,30 @@ async def pull_model_handler(model_name: str):
     if not model_name.strip():
         return "❌ Please enter a model name", gr.Dropdown()
     
-    result = await pull_model(model_name.strip())
-    
-    if result["success"]:
-        # Refresh available models after successful pull
-        models = await get_available_models()
-        dropdown_update = gr.Dropdown(choices=models, value=model_name.strip())
-        return f"✅ {result['message']}", dropdown_update
-    else:
-        return f"❌ {result['message']}", gr.Dropdown()
+    try:
+        result = await pull_model(model_name.strip())
+        
+        # Explicitly check for manifest errors in updates
+        manifest_error = any(
+            ("error" in update and "manifest" in update["error"].lower()) 
+            for update in result.get("updates", [])
+        )
+        
+        if result["success"] and not manifest_error:
+            models = await get_available_models()
+            dropdown_update = gr.Dropdown(choices=models, value=model_name.strip())
+            return f"✅ {result['message']}", dropdown_update
+        else:
+            # Extract the manifest error or use default message
+            error_msg = next(
+                (update["error"] for update in result.get("updates", [])
+                 if "error" in update and "manifest" in update["error"].lower()),
+                result.get("message", "Model pull failed (unknown error)")
+            )
+            return f"❌ {error_msg + " incorrect model name"}", gr.Dropdown()
+            
+    except Exception as e:
+        return f"❌ Error during model pull: {str(e)}", gr.Dropdown()
 
 def switch_model_handler(model_name: str):
     """Handle model switching"""
@@ -235,7 +245,6 @@ def create_gradio_interface():
                         recommended_models = gr.Dropdown(
                             label="Recommended Models",
                             choices=get_recommended_models(),
-                            value="gemma2:2b",
                             info="Popular models for security analysis"
                         )
                         
