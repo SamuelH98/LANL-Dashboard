@@ -1,6 +1,6 @@
 """
-Enhanced Gradio UI components for the Active Directory Red Team Analysis Dashboard
-Includes debug functionality and ML analysis features
+Simplified Gradio UI for the Active Directory Red Team Analysis Dashboard
+Works with the two-tool agent: analyze_with_ml_and_graph and summarize
 """
 
 import asyncio
@@ -12,6 +12,7 @@ import json
 import pandas as pd
 from datetime import datetime
 
+# Import simplified agent functions
 from agent import *
 
 # Global debug output storage
@@ -22,8 +23,7 @@ def add_debug_output(message: str):
     global debug_output
     timestamp = datetime.now().strftime("%H:%M:%S")
     debug_output.append(f"[{timestamp}] {message}")
-    # Keep only last 50 messages
-    debug_output = debug_output[-50:]
+    debug_output = debug_output[-50:]  # Keep only last 50 messages
 
 def get_debug_output() -> str:
     """Get current debug output as formatted string"""
@@ -42,7 +42,7 @@ async def get_status_html() -> str:
     neo4j_ok, llm_ok, ollama_ok = await asyncio.gather(
         asyncio.to_thread(check_neo4j_status), 
         check_llm_status(),
-        OllamaModelManager().check_ollama_status()
+        ad_agent.model_manager.check_ollama_status()
     )
     
     neo4j_status = "🟢 Neo4j Connected" if neo4j_ok else "🔴 Neo4j Disconnected"
@@ -75,7 +75,8 @@ async def refresh_available_models():
     add_debug_output("Refreshing available models...")
     models = await get_available_models()
     add_debug_output(f"Found {len(models)} available models: {models}")
-    return gr.Dropdown(choices=models, value=get_current_model() if get_current_model() in models else (models[0] if models else None))
+    current = get_current_model()
+    return gr.Dropdown(choices=models, value=current if current in models else (models[0] if models else None))
 
 async def pull_model_handler(model_name: str):
     """Handle model pulling with progress feedback"""
@@ -87,26 +88,14 @@ async def pull_model_handler(model_name: str):
         add_debug_output(f"Starting model pull for: {model_name.strip()}")
         result = await pull_model(model_name.strip())
         
-        # Explicitly check for manifest errors in updates
-        manifest_error = any(
-            ("error" in update and "manifest" in update["error"].lower()) 
-            for update in result.get("updates", [])
-        )
-        
-        if result["success"] and not manifest_error:
+        if result["success"]:
             models = await get_available_models()
             dropdown_update = gr.Dropdown(choices=models, value=model_name.strip())
             add_debug_output(f"SUCCESS: Model {model_name.strip()} pulled successfully")
             return f"✅ {result['message']}", dropdown_update
         else:
-            # Extract the manifest error or use default message
-            error_msg = next(
-                (update["error"] for update in result.get("updates", [])
-                 if "error" in update and "manifest" in update["error"].lower()),
-                result.get("message", "Model pull failed (unknown error)")
-            )
-            add_debug_output(f"ERROR: Model pull failed - {error_msg}")
-            return f"❌ {error_msg} - incorrect model name", gr.Dropdown()
+            add_debug_output(f"ERROR: Model pull failed - {result['message']}")
+            return f"❌ {result['message']}", gr.Dropdown()
             
     except Exception as e:
         add_debug_output(f"EXCEPTION during model pull: {str(e)}")
@@ -129,41 +118,38 @@ async def switch_model_handler(model_name: str):
         status_html = await get_status_html()
         return f"❌ Error switching model: {str(e)}", status_html
 
-# Enhanced visualization functions
+# Visualization functions
 async def create_network_visualization():
-    """Create a Plotly network graph from Neo4j data with ML insights."""
+    """Create network visualization with ML insights"""
     add_debug_output("Creating network visualization...")
     
     try:
         graph_data = await get_graph_for_visualization()
         if not graph_data["success"] or not graph_data["data"]:
-            add_debug_output("No graph data available for visualization")
+            add_debug_output("No graph data available")
             return go.Figure().add_annotation(text="No data available", x=0.5, y=0.5)
 
-        add_debug_output(f"Processing {len(graph_data['data'])} graph records")
-        
         G = nx.Graph()
         node_info = {}
         
         for record in graph_data["data"]:
             user = record['u']
             computer = record['c']
-            auth_event = record['ae']
             
             user_name = user.get('name', f"user_{user.get('id', 'unknown')}")
             computer_name = computer.get('name', f"computer_{computer.get('id', 'unknown')}")
             
-            G.add_node(user_name, type='User', full_data=user)
-            G.add_node(computer_name, type='Computer', full_data=computer)
-            G.add_edge(user_name, computer_name, auth_data=auth_event)
+            G.add_node(user_name, type='User')
+            G.add_node(computer_name, type='Computer')
+            G.add_edge(user_name, computer_name)
             
-            node_info[user_name] = {'type': 'User', 'data': user}
-            node_info[computer_name] = {'type': 'Computer', 'data': computer}
+            node_info[user_name] = 'User'
+            node_info[computer_name] = 'Computer'
 
-        # Apply ML insights if available
-        ml_analysis = graph_data.get("ml_analysis")
+        # Apply ML risk scores if available
         risk_scores = {}
-        if ml_analysis and ml_analysis.risk_scores:
+        ml_analysis = graph_data.get("ml_analysis")
+        if ml_analysis and hasattr(ml_analysis, 'risk_scores'):
             risk_scores = ml_analysis.risk_scores
             add_debug_output(f"Applied ML risk scores to {len(risk_scores)} nodes")
 
@@ -193,7 +179,7 @@ async def create_network_visualization():
             node_y.append(y)
             
             risk_score = risk_scores.get(node, 0)
-            node_type = node_info[node]['type']
+            node_type = node_info[node]
             
             # Color based on risk score and type
             if risk_score > 0.7:
@@ -206,7 +192,7 @@ async def create_network_visualization():
                 color = 'lightgreen'
             
             node_color.append(color)
-            node_size.append(15 + risk_score * 20)  # Size based on risk
+            node_size.append(15 + risk_score * 20)
             
             hover_text = f"{node}<br>Type: {node_type}<br>Risk Score: {risk_score:.3f}<br>Connections: {G.degree(node)}"
             node_text.append(hover_text)
@@ -215,7 +201,7 @@ async def create_network_visualization():
             x=node_x, y=node_y,
             mode='markers+text',
             hoverinfo='text',
-            text=[node_info[node]['data'].get('name', node) for node in G.nodes()],
+            text=[node[:10] for node in G.nodes()],  # Truncate names
             hovertext=node_text,
             textposition="middle center",
             marker=dict(
@@ -227,17 +213,11 @@ async def create_network_visualization():
 
         fig = go.Figure(data=[edge_trace, node_trace],
                  layout=go.Layout(
-                    title='Active Directory Network Graph (Risk-Based Visualization)',
+                    title='AD Network Graph (ML Risk-Based)',
                     titlefont_size=16,
                     showlegend=False,
                     hovermode='closest',
                     margin=dict(b=20,l=5,r=5,t=40),
-                    annotations=[dict(
-                        text="Node size and color indicate ML-calculated risk levels",
-                        showarrow=False,
-                        xref="paper", yref="paper",
-                        x=0.005, y=-0.002
-                    )],
                     xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
                     yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)
                 ))
@@ -250,29 +230,24 @@ async def create_network_visualization():
         return go.Figure().add_annotation(text=f"Error: {str(e)}", x=0.5, y=0.5)
 
 async def create_risk_heatmap():
-    """Create a risk heatmap based on ML analysis"""
+    """Create risk heatmap based on ML analysis"""
     try:
         add_debug_output("Creating risk heatmap...")
         
-        # Get user behavior data
-        behavior_data = await analyze_user_behavior()
+        behavior_data = await get_user_behavior_data()
         if not behavior_data["success"]:
             return go.Figure().add_annotation(text="No behavior data available", x=0.5, y=0.5)
         
-        users = behavior_data["data"]["most_active_users"][:20]  # Top 20 users
-        ml_analysis = behavior_data.get("ml_analysis", {})
-        risk_scores = ml_analysis.risk_scores if hasattr(ml_analysis, 'risk_scores') else {}
+        users = behavior_data["data"][:20]  # Top 20 users
+        ml_analysis = behavior_data.get("ml_analysis")
+        risk_scores = {}
+        if ml_analysis and hasattr(ml_analysis, 'risk_scores'):
+            risk_scores = ml_analysis.risk_scores
         
-        # Create heatmap data
         usernames = [user["username"] for user in users]
-        total_events = [user["total_events"] for user in users]
-        failed_events = [user["failed_events"] for user in users]
         risk_values = [risk_scores.get(user["username"], 0) for user in users]
         
-        # Create subplot with multiple metrics
         fig = go.Figure()
-        
-        # Add risk score heatmap
         fig.add_trace(go.Heatmap(
             z=[risk_values],
             x=usernames,
@@ -297,7 +272,7 @@ async def create_risk_heatmap():
         return go.Figure().add_annotation(text=f"Error: {str(e)}", x=0.5, y=0.5)
 
 async def create_time_series_plot():
-    """Create time series visualization of authentication patterns"""
+    """Create time series visualization"""
     try:
         add_debug_output("Creating time series plot...")
         
@@ -306,6 +281,8 @@ async def create_time_series_plot():
             return go.Figure().add_annotation(text="No hourly data available", x=0.5, y=0.5)
         
         hourly_records = hourly_data["data"]["hourly_data"]
+        if not hourly_records:
+            return go.Figure().add_annotation(text="No time series data", x=0.5, y=0.5)
         
         hours = [record["hour"] for record in hourly_records]
         events = [record["event_count"] for record in hourly_records]
@@ -320,95 +297,67 @@ async def create_time_series_plot():
             marker=dict(size=8)
         ))
         
-        # Add anomaly detection (simple threshold-based)
-        avg_events = sum(events) / len(events)
-        threshold = avg_events * 1.5
-        
-        anomaly_hours = [h for h, e in zip(hours, events) if e > threshold]
-        anomaly_events = [e for e in events if e > threshold]
-        
-        if anomaly_hours:
-            fig.add_trace(go.Scatter(
-                x=anomaly_hours,
-                y=anomaly_events,
-                mode='markers',
-                name='Anomalous Activity',
-                marker=dict(color='red', size=12, symbol='star')
-            ))
+        # Add anomaly detection
+        if events:
+            avg_events = sum(events) / len(events)
+            threshold = avg_events * 1.5
+            
+            anomaly_hours = [h for h, e in zip(hours, events) if e > threshold]
+            anomaly_events = [e for e in events if e > threshold]
+            
+            if anomaly_hours:
+                fig.add_trace(go.Scatter(
+                    x=anomaly_hours,
+                    y=anomaly_events,
+                    mode='markers',
+                    name='Anomalous Activity',
+                    marker=dict(color='red', size=12, symbol='star')
+                ))
         
         fig.update_layout(
-            title='Hourly Authentication Patterns with Anomaly Detection',
+            title='Hourly Authentication Patterns',
             xaxis_title='Hour of Day',
             yaxis_title='Number of Events',
             height=400
         )
         
-        add_debug_output(f"Time series plot created with {len(anomaly_hours)} anomalies detected")
+        add_debug_output(f"Time series plot created")
         return fig
         
     except Exception as e:
         add_debug_output(f"ERROR creating time series plot: {str(e)}")
         return go.Figure().add_annotation(text=f"Error: {str(e)}", x=0.5, y=0.5)
 
-# Dashboard update functions
-async def update_status_only():
-    """Update only the system status"""
-    return await get_status_html()
-
+# Main analysis functions using the simplified agent
 async def analyze_security_threats(analysis_type: str, progress=gr.Progress(track_tqdm=True)):
-    """Run security threat analysis based on selected type with ML enhancement"""
+    """Run security analysis using the two-tool agent"""
     progress(0, desc="Starting Analysis...")
     add_debug_output(f"Starting {analysis_type} analysis")
     
-    analysis_map = {
-        "Comprehensive Analysis": (
-            run_analysis,
-            "Perform comprehensive AD security analysis with ML insights. Focus on user behavior, authentication patterns, lateral movement, and network topology.",
-            analyze_authentication_patterns,
-            detect_lateral_movement,
-            analyze_user_behavior,
-            analyze_network_segmentation
-        ),
-        "Lateral Movement Detection": (
-            run_analysis,
-            "Focus on detecting lateral movement patterns and privilege escalation attempts using ML algorithms.",
-            detect_lateral_movement,
-            detect_privilege_escalation
-        ),
-        "User Behavior Analysis": (
-            run_analysis,
-            "Analyze user behavior patterns, identify outliers and suspicious account usage with ML-powered anomaly detection.",
-            analyze_user_behavior,
-            analyze_account_usage_patterns
-        ),
-        "Credential Attack Detection": (
-            run_analysis,
-            "Detect credential stuffing, brute force attacks, and suspicious authentication patterns.",
-            detect_credential_stuffing,
-            analyze_authentication_patterns
-        ),
-        "Network Topology Analysis": (
-            run_analysis,
-            "Analyze network topology, segmentation, and communication patterns for security insights.",
-            analyze_network_segmentation,
-            get_graph_for_visualization
-        )
+    # Map analysis types to functions
+    analysis_functions = {
+        "Comprehensive Analysis": run_comprehensive_analysis,
+        "Lateral Movement Detection": run_lateral_movement_analysis,
+        "User Behavior Analysis": run_user_behavior_analysis,
+        "Credential Attack Detection": run_credential_analysis,
+        "Network Topology Analysis": run_network_analysis
     }
     
-    if analysis_type not in analysis_map:
+    if analysis_type not in analysis_functions:
         add_debug_output(f"ERROR: Unknown analysis type: {analysis_type}")
         return "❌ Unknown analysis type selected"
     
-    func, query, *data_funcs = analysis_map[analysis_type]
-    progress(0.3, desc="Collecting data from Neo4j...")
-    add_debug_output(f"Running {len(data_funcs)} data collection functions")
+    progress(0.3, desc="Collecting data and running ML analysis...")
+    progress(0.6, desc=f"Processing with {get_current_model()}...")
     
-    progress(0.6, desc=f"Running ML analysis and LLM processing with {get_current_model()}...")
-    result = await func(func, query, *data_funcs)
-    
-    progress(1, desc="Analysis Complete!")
-    add_debug_output(f"Analysis completed: {analysis_type}")
-    return result
+    try:
+        result = await analysis_functions[analysis_type]()
+        progress(1, desc="Analysis Complete!")
+        add_debug_output(f"Analysis completed: {analysis_type}")
+        return result
+    except Exception as e:
+        add_debug_output(f"ERROR in analysis: {str(e)}")
+        return f"❌ Analysis failed: {str(e)}"
 
 async def refresh_dashboard_data():
     """Refresh all dashboard visualizations"""
@@ -430,12 +379,13 @@ async def refresh_dashboard_data():
         return empty_fig, empty_fig, empty_fig
 
 def create_gradio_interface():
-    """Create and configure the enhanced Gradio interface with debug functionality"""
+    """Create the simplified Gradio interface"""
     with gr.Blocks(title="AD Red Team Analysis Dashboard", theme=gr.themes.Default()) as demo:
         gr.HTML("""
         <div style="text-align: center; max-width: 1200px; margin: 20px auto;">
             <h1 style="font-size: 2.5rem;">🔒 AD Red Team Analysis Dashboard</h1>
-            <p style="color: #9CA3AF; font-size: 1.1rem;">AI-powered security threat detection with machine learning analysis and advanced debugging</p>
+            <p style="color: #9CA3AF; font-size: 1.1rem;">Simplified AI-powered security threat detection with ML analysis</p>
+            <p style="color: #6B7280; font-size: 0.9rem;">Two-Tool Agent: analyze_with_ml_and_graph + summarize</p>
         </div>
         """)
 
@@ -444,7 +394,7 @@ def create_gradio_interface():
             with gr.TabItem("🔍 Security Analysis", id="analysis_tab"):
                 with gr.Row():
                     with gr.Column(scale=2):
-                        gr.HTML("<h2 style='text-align: left;'>🎯 Analysis Control</h2>")
+                        gr.HTML("<h2>🎯 Analysis Control</h2>")
                         
                         analysis_dropdown = gr.Dropdown(
                             choices=[
@@ -466,30 +416,29 @@ def create_gradio_interface():
                         analysis_output = gr.Markdown(
                             label="Analysis Results",
                             value="*Select an analysis type and click 'Run Analysis'. Results will appear here...*",
-                            elem_classes="analysis-output",
                             height=600
                         )
 
                     with gr.Column(scale=3):
-                        gr.HTML("<h2 style='text-align: left;'>📊 Real-time Visualizations</h2>")
+                        gr.HTML("<h2>📊 Real-time Visualizations</h2>")
                         
                         with gr.Tabs():
                             with gr.TabItem("Network Graph"):
                                 network_plot = gr.Plot(
                                     label="AD Network Topology",
-                                    value=go.Figure().add_annotation(text="Click 'Refresh Data' to load visualization", x=0.5, y=0.5)
+                                    value=go.Figure().add_annotation(text="Click 'Refresh Data' to load", x=0.5, y=0.5)
                                 )
                             
                             with gr.TabItem("Risk Heatmap"):
                                 risk_plot = gr.Plot(
                                     label="User Risk Assessment",
-                                    value=go.Figure().add_annotation(text="Click 'Refresh Data' to load heatmap", x=0.5, y=0.5)
+                                    value=go.Figure().add_annotation(text="Click 'Refresh Data' to load", x=0.5, y=0.5)
                                 )
                             
                             with gr.TabItem("Time Series"):
                                 time_plot = gr.Plot(
-                                    label="Authentication Patterns Over Time",
-                                    value=go.Figure().add_annotation(text="Click 'Refresh Data' to load time series", x=0.5, y=0.5)
+                                    label="Authentication Patterns",
+                                    value=go.Figure().add_annotation(text="Click 'Refresh Data' to load", x=0.5, y=0.5)
                                 )
 
             # Model Management Tab
@@ -502,7 +451,7 @@ def create_gradio_interface():
                             label="Installed Models",
                             choices=[],
                             value=None,
-                            info="Select from models already installed on your system"
+                            info="Select from models already installed"
                         )
                         
                         with gr.Row():
@@ -515,12 +464,12 @@ def create_gradio_interface():
                         recommended_models = gr.Dropdown(
                             label="Recommended Models",
                             choices=get_recommended_models(),
-                            info="Curated models optimized for security analysis"
+                            info="Optimized models for security analysis"
                         )
                         
                         custom_model = gr.Textbox(
                             label="Custom Model Name",
-                            placeholder="e.g., llama3.1:8b, mistral:7b, qwen2:7b",
+                            placeholder="e.g., llama3.1:8b, mistral:7b",
                             info="Enter any model name from Ollama registry"
                         )
                         
@@ -544,13 +493,12 @@ def create_gradio_interface():
                         debug_toggle = gr.Checkbox(
                             label="Enable Debug Mode",
                             value=False,
-                            info="Toggle detailed logging for troubleshooting"
+                            info="Toggle detailed logging"
                         )
                         
                         with gr.Row():
                             clear_debug_btn = gr.Button("🗑️ Clear Debug Log", size="sm")
                             refresh_debug_btn = gr.Button("🔄 Refresh Debug", size="sm")
-                            export_debug_btn = gr.Button("📤 Export Debug Log", size="sm")
                     
                     with gr.Column():
                         gr.HTML("<h2>Debug Output</h2>")
@@ -563,40 +511,7 @@ def create_gradio_interface():
                             show_copy_button=True
                         )
 
-            # Data Explorer Tab
-            with gr.TabItem("📈 Data Explorer", id="data_tab"):
-                gr.HTML("<h2>Raw Data Analysis</h2>")
-                
-                with gr.Row():
-                    data_query_dropdown = gr.Dropdown(
-                        choices=[
-                            "Authentication Statistics",
-                            "User Activity Summary", 
-                            "Computer Access Patterns",
-                            "Failed Login Analysis",
-                            "Hourly Activity Distribution",
-                            "Service Account Analysis"
-                        ],
-                        label="Select Data Query",
-                        value="Authentication Statistics"
-                    )
-                    
-                    run_query_btn = gr.Button("📊 Run Query", variant="primary")
-                
-                data_output = gr.DataFrame(
-                    label="Query Results",
-                    interactive=False,
-                    wrap=True
-                )
-                
-                data_insights = gr.Markdown(
-                    label="Data Insights",
-                    value="*Run a query to see data insights and statistics...*"
-                )
-
         # Event Handlers
-        
-        # Analysis tab handlers
         analyze_btn.click(
             fn=analyze_security_threats,
             inputs=[analysis_dropdown],
@@ -608,7 +523,6 @@ def create_gradio_interface():
             outputs=[network_plot, risk_plot, time_plot]
         )
         
-        # Model management handlers
         refresh_models_btn.click(
             fn=refresh_available_models,
             outputs=[available_models]
@@ -632,7 +546,6 @@ def create_gradio_interface():
             outputs=[model_status, available_models]
         )
         
-        # Debug tab handlers
         debug_toggle.change(
             fn=toggle_debug_mode,
             inputs=[debug_toggle],
@@ -644,80 +557,15 @@ def create_gradio_interface():
             outputs=[debug_output_display]
         )
         
-        # Manual debug refresh function
-        async def refresh_debug_output():
-            """Manually refresh debug output"""
-            return get_debug_output()
-        
         refresh_debug_btn.click(
-            fn=refresh_debug_output,
+            fn=get_debug_output,
             outputs=[debug_output_display]
-        )
-        
-        # Data explorer handlers
-        async def run_data_query(query_type: str):
-            """Run selected data query and return results"""
-            add_debug_output(f"Running data query: {query_type}")
-            
-            try:
-                query_map = {
-                    "Authentication Statistics": analyze_authentication_patterns,
-                    "User Activity Summary": analyze_user_behavior,
-                    "Computer Access Patterns": detect_lateral_movement,
-                    "Failed Login Analysis": detect_credential_stuffing,
-                    "Hourly Activity Distribution": get_hourly_data,
-                    "Service Account Analysis": analyze_account_usage_patterns
-                }
-                
-                if query_type not in query_map:
-                    return pd.DataFrame(), "❌ Unknown query type"
-                
-                result = await query_map[query_type]()
-                
-                if not result["success"]:
-                    return pd.DataFrame(), f"❌ Query failed: {result.get('error', 'Unknown error')}"
-                
-                # Convert first available data to DataFrame
-                data = result["data"]
-                if isinstance(data, dict):
-                    # Get the first non-empty dataset
-                    for key, value in data.items():
-                        if value and isinstance(value, list):
-                            df = pd.DataFrame(value)
-                            insights = f"### {key.replace('_', ' ').title()}\n\n"
-                            insights += f"- **Total Records**: {len(df)}\n"
-                            insights += f"- **Columns**: {', '.join(df.columns.tolist())}\n"
-                            if len(df) > 0:
-                                insights += f"- **Sample Data**: {len(df)} rows loaded\n"
-                            
-                            # Add ML insights if available
-                            if "ml_analysis" in result:
-                                ml_data = result["ml_analysis"]
-                                if hasattr(ml_data, 'outliers') and ml_data.outliers:
-                                    insights += f"- **ML Outliers Detected**: {len(ml_data.outliers)}\n"
-                                if hasattr(ml_data, 'risk_scores') and ml_data.risk_scores:
-                                    avg_risk = sum(ml_data.risk_scores.values()) / len(ml_data.risk_scores)
-                                    insights += f"- **Average Risk Score**: {avg_risk:.3f}\n"
-                            
-                            add_debug_output(f"Data query completed: {len(df)} records returned")
-                            return df.head(100), insights  # Limit to first 100 rows for display
-                
-                return pd.DataFrame(), "No tabular data available for this query"
-                
-            except Exception as e:
-                add_debug_output(f"ERROR in data query: {str(e)}")
-                return pd.DataFrame(), f"❌ Error: {str(e)}"
-        
-        run_query_btn.click(
-            fn=run_data_query,
-            inputs=[data_query_dropdown],
-            outputs=[data_output, data_insights]
         )
         
         # Initialize dashboard on load
         async def init_dashboard():
             """Initialize dashboard with initial data"""
-            add_debug_output("Initializing dashboard...")
+            add_debug_output("Initializing simplified dashboard...")
             
             try:
                 status_data, models = await asyncio.gather(
