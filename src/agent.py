@@ -169,7 +169,7 @@ class ADAnalysisAgent:
 
             response = await litellm.acompletion(
                 model=self.model, messages=[{"role": "system", "content": self.system_prompt}, {"role": "user", "content": prompt}],
-                temperature=0.2, max_tokens=2000, response_format={"type": "json_object"}
+                temperature=0.2, max_tokens=2000, format="json"
             )
             
             content = response.choices[0].message.content
@@ -191,9 +191,35 @@ class ADAnalysisAgent:
         """
         FIX: This function now creates a compact, statistical summary instead of long lists of events.
         This is the primary fix for the "Prompt too large" error.
+        FIXED: Properly handle timestamp objects from Neo4j
         """
         redteam_events = [r for r in records if r.get('is_redteam')]
-        off_hours_events = [r for r in records if r.get("timestamp") and (r["timestamp"].hour >= 22 or r["timestamp"].hour <= 6)]
+        
+        # Fix for timestamp handling - safely extract hour
+        off_hours_events = []
+        for r in records:
+            timestamp = r.get("timestamp")
+            if timestamp:
+                try:
+                    # Handle Neo4j datetime objects or string timestamps
+                    if hasattr(timestamp, 'hour'):
+                        hour = timestamp.hour
+                    elif hasattr(timestamp, 'to_native'):
+                        # Neo4j datetime object
+                        native_dt = timestamp.to_native()
+                        hour = native_dt.hour
+                    elif isinstance(timestamp, str):
+                        # Parse string timestamp
+                        dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                        hour = dt.hour
+                    else:
+                        continue
+                    
+                    if hour >= 22 or hour <= 6:
+                        off_hours_events.append(r)
+                except (AttributeError, ValueError, TypeError):
+                    # Skip records with unparseable timestamps
+                    continue
         
         user_failure_counts = Counter()
         user_computer_counts = Counter()

@@ -51,7 +51,7 @@ async def toggle_debug_mode(enabled: bool):
 async def refresh_available_models():
     """Refresh the list of available models"""
     add_debug_output("Refreshing available models...")
-    models = await get_available_models()
+    models = await OllamaModelManager().get_available_models()
     add_debug_output(f"Found {len(models)} available models: {models}")
     current = get_current_model()
     return gr.Dropdown(choices=models, value=current if current in models else (models[0] if models else None))
@@ -64,10 +64,10 @@ async def pull_model_handler(model_name: str):
     
     try:
         add_debug_output(f"Starting model pull for: {model_name.strip()}")
-        result = await pull_model(model_name.strip())
+        result = await OllamaModelManager().pull_model(model_name.strip())
         
         if result["success"]:
-            models = await get_available_models()
+            models = await OllamaModelManager().get_available_models()
             dropdown_update = gr.Dropdown(choices=models, value=model_name.strip())
             add_debug_output(f"SUCCESS: Model {model_name.strip()} pulled successfully")
             return f"✅ {result['message']}", dropdown_update
@@ -268,7 +268,7 @@ def create_gradio_interface():
                         
                         recommended_models = gr.Dropdown(
                             label="Recommended Models",
-                            choices=get_recommended_models(),
+                            choices=OllamaModelManager().get_recommended_models(),
                             info="Optimized models for security analysis"
                         )
                         
