@@ -135,10 +135,14 @@ class ADAnalysisAgent:
         self.model_manager = OllamaModelManager()
         self.connection = Neo4jConnection()
         self.max_prompt_tokens = 3800
+        # FIX: Explicitly tell the LLM to include all required JSON keys, including a non-empty 'summary'.
         self.system_prompt = (
             "You are a cybersecurity expert. Analyze the provided JSON summary of Active Directory authentication data. "
             "Focus on interpreting the `stats` and `anomaly_summary` to identify threats like lateral movement, red team activity, and high-risk users. "
-            "Your response must be a valid JSON object."
+            "Your response must be a valid JSON object containing the following keys: 'findings' (list of strings), "
+            "'suspicious_activities' (list of strings), 'recommendations' (list of strings), "
+            "'summary' (a concise executive summary string), and 'risk_level' (string: LOW, MEDIUM, HIGH, CRITICAL). "
+            "Ensure 'summary' is always present and a non-empty string."
         )
 
     def set_model(self, model_name: str):
@@ -270,6 +274,7 @@ class ADAnalysisAgent:
     def close(self):
         if self.connection: self.connection.close()
 
+        
 # --- Global Instance and Interface Functions ---
 ad_agent = ADAnalysisAgent()
 def check_neo4j_status() -> bool:
@@ -325,3 +330,5 @@ async def get_user_behavior_data():
         result = connection.execute_query(query)
         return {"success": result["success"], "data": result.get("records", [])}
     finally: connection.close()
+
+
