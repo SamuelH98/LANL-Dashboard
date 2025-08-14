@@ -1,13 +1,13 @@
 
-# Agentic Active Directory Security Analysis Dashboard
+# Analysis of the LANL Active Directory Cybersecurity Dataset
 
-This project provides a complete framework for analyzing cybersecurity authentication logs. It uses a multi-threaded C preprocessor to parse and label the LANL dataset, imports it into a Neo4j graph database, and provides an interactive dashboard powered by a `Gemma-3` LLM agent for threat detection and analysis.
+This project provides a complete framework for analyzing the Los Alamos National Laboratory (LANL) cybersecurity authentication dataset. It uses a multi-threaded C parser to process the raw logs, imports the data into a Neo4j graph database, and provides an interactive dashboard powered by a `Gemma` LLM agent for threat detection and analysis.
 
 ## Features
 
 -   **High-Performance Preprocessing:** A multi-threaded C program to efficiently parse, filter, and label millions of log events.
 -   **Graph-Based Data Model:** Leverages Neo4j to model complex relationships between users, computers, and authentication events.
--   **Interactive Web Dashboard:** Built with Gradio for real-time visualization of security metrics.
+-   **Interactive Analysis Dashboard:** Built with Gradio for real-time visualization of security metrics from the LANL logs.
 -   **Agentic AI Analysis:** Deploys an LLM agent (Gemma-3 via LiteLLM) to perform autonomous security analysis, identify threats, and generate human-readable reports.
 -   **System Status Monitoring:** The dashboard provides live status checks for backend services (Neo4j and Ollama).
 

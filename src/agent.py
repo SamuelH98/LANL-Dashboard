@@ -1,6 +1,5 @@
 """
-agent.py
-Rewritten to align with the provided Optimized Neo4j Cypher Import Script and to fix critical token overflow issues.
+agent.py - Enhanced version with graph explanation and research conclusion capabilities
 """
 
 from dataclasses import dataclass
@@ -57,12 +56,11 @@ def debug_log(message: str, data: Any = None):
             print(f"[DEBUG DATA] {json.dumps(data, indent=2, default=str)}")
 
 
-# This function can be called from other modules to log messages
 def add_debug_output(message: str):
     debug_log(message)
 
 
-# --- Pydantic and Connection Classes (Unchanged) ---
+# --- Enhanced Pydantic Models ---
 class SecurityAnalysis(BaseModel):
     findings: List[str] = Field(description="List of security findings")
     suspicious_activities: List[str] = Field(description="Suspicious activities detected")
@@ -72,6 +70,23 @@ class SecurityAnalysis(BaseModel):
     anomaly_scores: Dict[str, float] = Field(
         default={}, description="Anomaly scores for high-risk users"
     )
+
+
+class GraphAnalysis(BaseModel):
+    network_insights: List[str] = Field(description="Network topology insights")
+    risk_patterns: List[str] = Field(description="Risk heatmap patterns identified")
+    temporal_findings: List[str] = Field(description="Time series analysis findings")
+    graph_summary: str = Field(description="Overall graph analysis summary")
+    key_metrics: Dict[str, Any] = Field(default={}, description="Key quantitative metrics")
+
+
+class ResearchConclusion(BaseModel):
+    methodology_summary: str = Field(description="Summary of analytical methodology")
+    key_findings: List[str] = Field(description="Primary research findings")
+    statistical_insights: List[str] = Field(description="Statistical analysis results")
+    limitations: List[str] = Field(description="Study limitations")
+    future_research: List[str] = Field(description="Recommendations for future research")
+    conclusion: str = Field(description="Overall research conclusion")
 
 
 class Neo4jConnection:
@@ -131,7 +146,6 @@ class OllamaModelManager:
             return False
 
     async def pull_model(self, model_name: str) -> Dict[str, Any]:
-        """Pull a model from Ollama"""
         try:
             debug_log(f"Pulling model: {model_name}")
             async with aiohttp.ClientSession() as session:
@@ -147,7 +161,6 @@ class OllamaModelManager:
                             "message": f"Failed to pull model: {error_text}",
                         }
 
-                    # Process streaming response
                     progress_updates = []
                     async for line in response.content:
                         if line.strip():
@@ -171,21 +184,37 @@ class OllamaModelManager:
         return ["gemma3:4b", "gemma3:1b", "deepseek-r1:1.5b", "qwen3:0.6b"]
 
 
-# --- Core Agent Logic (Rewritten for New Schema & Token Efficiency) ---
+# --- Enhanced Core Agent Logic ---
 class ADAnalysisAgent:
     def __init__(self):
         self.model = "ollama/gemma3:1b"
         self.model_manager = OllamaModelManager()
         self.connection = Neo4jConnection()
         self.max_prompt_tokens = 3800
-        # FIX: Explicitly tell the LLM to include all required JSON keys, including a non-empty 'summary'.
-        self.system_prompt = (
+        
+        # Enhanced system prompts for different analysis types
+        self.security_prompt = (
             "You are a cybersecurity expert. Analyze the provided JSON summary of Active Directory authentication data. "
             "Focus on interpreting the `stats` and `anomaly_summary` to identify threats like lateral movement, red team activity, and high-risk users. "
             "Your response must be a valid JSON object containing the following keys: 'findings' (list of strings), "
             "'suspicious_activities' (list of strings), 'recommendations' (list of strings), "
             "'summary' (a concise executive summary string), and 'risk_level' (string: LOW, MEDIUM, HIGH, CRITICAL). "
             "Ensure 'summary' is always present and a non-empty string."
+        )
+        
+        self.graph_analysis_prompt = (
+            "You are a data analyst specializing in graph analysis and network security visualization. "
+            "Analyze the provided graph data including network topology, risk patterns, and temporal data. "
+            "Explain what each type of visualization reveals about the security posture. "
+            "Your response must be a valid JSON object with: 'network_insights' (list), 'risk_patterns' (list), "
+            "'temporal_findings' (list), 'graph_summary' (string), and 'key_metrics' (dict)."
+        )
+        
+        self.research_prompt = (
+            "You are a cybersecurity researcher writing conclusions for an academic paper on the security breach security analysis. "
+            "Based on the provided analysis data, generate research conclusions including methodology, findings, and implications. "
+            "Your response must be a valid JSON object with: 'methodology_summary' (string), 'key_findings' (list), "
+            "'statistical_insights' (list), 'limitations' (list), 'future_research' (list), and 'conclusion' (string)."
         )
 
     def set_model(self, model_name: str):
@@ -219,6 +248,7 @@ class ADAnalysisAgent:
             prompt = self._build_llm_prompt(records, anomaly_summary)
             token_count = count_tokens(prompt)
             debug_log(f"Final prompt size: {token_count} tokens")
+            
             if token_count > self.max_prompt_tokens:
                 raise ValueError(
                     f"Prompt is too large ({token_count} tokens). The anomaly summary is too verbose."
@@ -227,7 +257,7 @@ class ADAnalysisAgent:
             response = await litellm.acompletion(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": self.system_prompt},
+                    {"role": "system", "content": self.security_prompt},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.2,
@@ -255,29 +285,126 @@ class ADAnalysisAgent:
                 "findings": [error_msg],
             }
 
+    async def analyze_graphs(self) -> Dict[str, Any]:
+        """Analyze visualization data and provide insights about each graph type"""
+        try:
+            # Get data for all visualization types
+            network_data = await get_graph_for_visualization()
+            risk_data = await get_user_behavior_data()
+            temporal_data = await get_hourly_data()
+            
+            # Create analysis summary
+            analysis_data = {
+                "network_topology": {
+                    "total_connections": len(network_data.get("data", [])),
+                    "unique_entities": len(set([d.get("user_name") for d in network_data.get("data", [])] + 
+                                            [d.get("computer_name") for d in network_data.get("data", [])]))
+                },
+                "risk_patterns": {
+                    "users_analyzed": len(risk_data.get("data", [])),
+                    "high_risk_users": len([u for u in risk_data.get("data", []) 
+                                          if u.get("fails", 0) / max(u.get("total", 1), 1) > 0.1])
+                },
+                "temporal_patterns": {
+                    "hours_analyzed": len(temporal_data.get("data", {}).get("hourly_data", [])),
+                    "peak_hour": max(temporal_data.get("data", {}).get("hourly_data", []), 
+                                   key=lambda x: x.get("event_count", 0), default={}).get("hour", "N/A")
+                }
+            }
+            
+            prompt = f"Analyze these graph visualization insights: {json.dumps(analysis_data, separators=(',', ':'))}"
+            
+            response = await litellm.acompletion(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": self.graph_analysis_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.3,
+                max_tokens=1500,
+                format="json",
+            )
+
+            content = response.choices[0].message.content
+            if content.strip().startswith("```json"):
+                content = content.strip()[7:-4]
+            
+            return json.loads(content)
+
+        except Exception as e:
+            debug_log(f"Graph analysis error: {str(e)}")
+            return {
+                "network_insights": [f"Error analyzing network: {str(e)}"],
+                "risk_patterns": ["Unable to analyze risk patterns"],
+                "temporal_findings": ["Unable to analyze temporal data"],
+                "graph_summary": f"Graph analysis failed: {str(e)}",
+                "key_metrics": {}
+            }
+
+    async def generate_research_conclusions(self, security_analysis: Dict, graph_analysis: Dict) -> Dict[str, Any]:
+        """Generate research paper conclusions based on security and graph analysis"""
+        try:
+            research_data = {
+                "security_findings": {
+                    "risk_level": security_analysis.get("risk_level", "UNKNOWN"),
+                    "findings_count": len(security_analysis.get("findings", [])),
+                    "suspicious_activities": len(security_analysis.get("suspicious_activities", [])),
+                    "anomaly_users": len(security_analysis.get("anomaly_scores", {}))
+                },
+                "graph_insights": {
+                    "network_patterns": len(graph_analysis.get("network_insights", [])),
+                    "risk_indicators": len(graph_analysis.get("risk_patterns", [])),
+                    "temporal_anomalies": len(graph_analysis.get("temporal_findings", []))
+                },
+                "methodology": "Multi-dimensional security breach analysis using graph databases and ML"
+            }
+            
+            prompt = f"Generate research conclusions based on this analysis: {json.dumps(research_data, separators=(',', ':'))}"
+            
+            response = await litellm.acompletion(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": self.research_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.4,
+                max_tokens=2000,
+                format="json",
+            )
+
+            content = response.choices[0].message.content
+            if content.strip().startswith("```json"):
+                content = content.strip()[7:-4]
+            
+            return json.loads(content)
+
+        except Exception as e:
+            debug_log(f"Research conclusion error: {str(e)}")
+            return {
+                "methodology_summary": f"Analysis methodology encountered error: {str(e)}",
+                "key_findings": ["Unable to generate findings due to processing error"],
+                "statistical_insights": ["Statistical analysis unavailable"],
+                "limitations": [f"Analysis limited by error: {str(e)}"],
+                "future_research": ["Error recovery and system optimization needed"],
+                "conclusion": f"Research analysis incomplete due to technical issues: {str(e)}"
+            }
+
     def _create_anomaly_summary(self, records: List[Dict]) -> Dict:
-        """
-        FIX: This function now creates a compact, statistical summary instead of long lists of events.
-        This is the primary fix for the "Prompt too large" error.
-        FIXED: Properly handle timestamp objects from Neo4j
-        """
+        """Create compact statistical summary for analysis"""
         redteam_events = [r for r in records if r.get("is_redteam")]
 
-        # Fix for timestamp handling - safely extract hour
+        # Handle timestamp objects safely
         off_hours_events = []
         for r in records:
             timestamp = r.get("timestamp")
             if timestamp:
                 try:
-                    # Handle Neo4j datetime objects or string timestamps
                     if hasattr(timestamp, "hour"):
                         hour = timestamp.hour
                     elif hasattr(timestamp, "to_native"):
-                        # Neo4j datetime object
                         native_dt = timestamp.to_native()
                         hour = native_dt.hour
                     elif isinstance(timestamp, str):
-                        # Parse string timestamp
                         dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
                         hour = dt.hour
                     else:
@@ -286,7 +413,6 @@ class ADAnalysisAgent:
                     if hour >= 22 or hour <= 6:
                         off_hours_events.append(r)
                 except (AttributeError, ValueError, TypeError):
-                    # Skip records with unparseable timestamps
                     continue
 
         user_failure_counts = Counter()
@@ -308,14 +434,12 @@ class ADAnalysisAgent:
             "redteam_summary": {
                 "count": len(redteam_events),
                 "top_users": [
-                    u
-                    for u, c in Counter(
+                    u for u, c in Counter(
                         r.get("username") for r in redteam_events
                     ).most_common(5)
                 ],
                 "top_computers": [
-                    c
-                    for c, c_ in Counter(
+                    c for c, c_ in Counter(
                         r.get("computer_name") for r in redteam_events
                     ).most_common(5)
                 ],
@@ -323,8 +447,7 @@ class ADAnalysisAgent:
             "off_hours_summary": {
                 "count": len(off_hours_events),
                 "top_users": [
-                    u
-                    for u, c in Counter(
+                    u for u, c in Counter(
                         r.get("username") for r in off_hours_events
                     ).most_common(5)
                 ],
@@ -337,7 +460,6 @@ class ADAnalysisAgent:
                 "count": len(multi_computer_users),
                 "top_users": dict(Counter(multi_computer_users).most_common(5)),
             },
-            # Create anomaly scores only for the top offenders to keep it small
             "anomaly_scores": {
                 user: count for user, count in user_failure_counts.most_common(20)
             },
@@ -354,9 +476,8 @@ class ADAnalysisAgent:
             ),
         }
 
-        # Use compact JSON formatting (separators) to save tokens. Samples are removed to ensure fit.
         return (
-            f"Analyze this AD security data. Focus on interpreting the `stats` and `anomaly_summary`.\n"
+            f"Analyze this security breach data. Focus on interpreting the `stats` and `anomaly_summary`.\n"
             f"**Stats:**\n{json.dumps(stats, separators=(',', ':'))}\n"
             f"**Anomaly Summary:**\n{json.dumps(anomaly_summary, default=str, separators=(',', ':'))}\n"
             f"Based on these summaries, identify findings, suspicious activities, and recommendations."
@@ -418,10 +539,25 @@ async def run_quick_scan() -> str:
     return format_analysis_result(await ad_agent.analyze_with_graph("quick"))
 
 
+# --- New Enhanced Analysis Functions ---
+async def analyze_graphs_with_agent() -> str:
+    """Get agent's analysis of the visualization graphs"""
+    result = await ad_agent.analyze_graphs()
+    return format_graph_analysis(result)
+
+
+async def generate_research_conclusions_with_agent() -> str:
+    """Generate research paper conclusions using the agent"""
+    security_analysis = await ad_agent.analyze_with_graph("full")
+    graph_analysis = await ad_agent.analyze_graphs()
+    research_result = await ad_agent.generate_research_conclusions(security_analysis, graph_analysis)
+    return format_research_conclusions(research_result)
+
+
 def format_analysis_result(result: Dict[str, Any]) -> str:
     try:
         risk = result.get("risk_level", "UNKNOWN").upper()
-        emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🟠", "CRITICAL": "🔴"}.get(risk, "⚪️")
+        emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🟠", "CRITICAL": "🔴"}.get(risk, "⚪")
         output = [
             f"## {emoji} Risk Level: {risk}\n",
             f"### 📋 Executive Summary\n{result.get('summary', 'N/A')}\n",
@@ -440,12 +576,12 @@ def format_analysis_result(result: Dict[str, Any]) -> str:
             )
         if result.get("anomaly_scores"):
             scores = sorted(
-                result["anomaly_scores"].items(), key=lambda item: item, reverse=True
+                result["anomaly_scores"].items(), key=lambda item: item[1], reverse=True
             )
             output.extend(
                 [
                     "### 📊 Anomaly Scores (Top Users by Failure Count)",
-                    *[f"- **{entity}**: {score} failures" for entity, score in scores],
+                    *[f"- **{entity}**: {score} failures" for entity, score in scores[:10]],
                     "",
                 ]
             )
@@ -456,9 +592,93 @@ def format_analysis_result(result: Dict[str, Any]) -> str:
         return "\n".join(output)
     except Exception as e:
         debug_log(f"Error formatting results: {str(e)}")
-        return (
-            f"❌ Error formatting: {str(e)}\n\nRaw: {json.dumps(result, indent=2, default=str)}"
-        )
+        return f"❌ Error formatting: {str(e)}\n\nRaw: {json.dumps(result, indent=2, default=str)}"
+
+
+def format_graph_analysis(result: Dict[str, Any]) -> str:
+    """Format graph analysis results for display"""
+    try:
+        output = [
+            "# 📊 Graph Analysis Report\n",
+            f"## 🔗 Network Topology Insights\n{result.get('graph_summary', 'N/A')}\n"
+        ]
+        
+        if result.get("network_insights"):
+            output.extend([
+                "### Network Patterns:",
+                *[f"- {insight}" for insight in result["network_insights"]],
+                ""
+            ])
+        
+        if result.get("risk_patterns"):
+            output.extend([
+                "### Risk Heatmap Analysis:",
+                *[f"- {pattern}" for pattern in result["risk_patterns"]],
+                ""
+            ])
+        
+        if result.get("temporal_findings"):
+            output.extend([
+                "### Temporal Pattern Analysis:",
+                *[f"- {finding}" for finding in result["temporal_findings"]],
+                ""
+            ])
+        
+        if result.get("key_metrics"):
+            output.extend([
+                "### Key Metrics:",
+                *[f"- **{k}**: {v}" for k, v in result["key_metrics"].items()],
+                ""
+            ])
+        
+        return "\n".join(output)
+    except Exception as e:
+        return f"❌ Error formatting graph analysis: {str(e)}"
+
+
+def format_research_conclusions(result: Dict[str, Any]) -> str:
+    """Format research conclusions for display"""
+    try:
+        output = [
+            "# 🎓 Research Paper Conclusions\n",
+            f"## Methodology\n{result.get('methodology_summary', 'N/A')}\n"
+        ]
+        
+        if result.get("key_findings"):
+            output.extend([
+                "## Key Findings:",
+                *[f"- {finding}" for finding in result["key_findings"]],
+                ""
+            ])
+        
+        if result.get("statistical_insights"):
+            output.extend([
+                "## Statistical Insights:",
+                *[f"- {insight}" for insight in result["statistical_insights"]],
+                ""
+            ])
+        
+        if result.get("limitations"):
+            output.extend([
+                "## Study Limitations:",
+                *[f"- {limitation}" for limitation in result["limitations"]],
+                ""
+            ])
+        
+        if result.get("future_research"):
+            output.extend([
+                "## Future Research Directions:",
+                *[f"- {direction}" for direction in result["future_research"]],
+                ""
+            ])
+        
+        output.extend([
+            f"## Conclusion\n{result.get('conclusion', 'N/A')}"
+        ])
+        
+        return "\n".join(output)
+    except Exception as e:
+        return f"❌ Error formatting research conclusions: {str(e)}"
 
 
 # --- Visualization Queries (Schema-Aligned) ---

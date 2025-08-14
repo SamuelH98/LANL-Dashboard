@@ -1,7 +1,5 @@
 """
-ui.py
-This file has been rewritten to correctly handle the data formats provided by the schema-aligned agent.py.
-This fixes all broken visualizations.
+ui.py - Streamlined single-page UI for comprehensive AD security analysis.
 """
 
 import asyncio
@@ -19,9 +17,9 @@ from agent import (
     get_current_model,
     set_current_model,
     run_full_scan,
-    run_quick_scan,
-    format_analysis_result,
     OllamaModelManager,
+    analyze_graphs_with_agent,
+    generate_research_conclusions_with_agent,
 )
 
 # Import visualization functions
@@ -31,28 +29,32 @@ from visualizations import (
     create_time_series_plot,
 )
 
-# --- Debug and Status Helpers (Unchanged) ---
+# --- Debug and Status Helpers ---
 debug_output = []
 
-
 def add_debug_output(message: str):
+    """Adds a timestamped message to the debug log."""
     global debug_output
     timestamp = datetime.now().strftime("%H:%M:%S")
     debug_output.append(f"[{timestamp}] {message}")
-    debug_output = debug_output[-50:]
+    # Keep the log from growing indefinitely
+    debug_output = debug_output[-100:]
 
 
 def get_debug_output() -> str:
+    """Returns the current debug log as a string."""
     return "\n".join(debug_output) if debug_output else "Debug output will appear here..."
 
 
 def clear_debug_output():
+    """Clears the debug log."""
     global debug_output
     debug_output = []
     return "Debug output cleared."
 
 
 async def get_status_html() -> str:
+    """Generates an HTML string with the current system status."""
     neo4j_ok, llm_ok, ollama_ok = await asyncio.gather(
         asyncio.to_thread(check_neo4j_status),
         check_llm_status(),
@@ -70,17 +72,18 @@ async def get_status_html() -> str:
 
 
 async def toggle_debug_mode(enabled: bool):
+    """Toggles the debug mode on or off."""
     set_debug_mode(enabled)
     add_debug_output(f"Debug mode {'ENABLED' if enabled else 'DISABLED'}")
     return await get_status_html(), get_debug_output()
 
 
-# Model management functions
+# --- Model Management Handlers ---
 async def refresh_available_models():
-    """Refresh the list of available models"""
+    """Refreshes the dropdown list of available Ollama models."""
     add_debug_output("Refreshing available models...")
     models = await OllamaModelManager().get_available_models()
-    add_debug_output(f"Found {len(models)} available models: {models}")
+    add_debug_output(f"Found {len(models)} available models.")
     current = get_current_model()
     return gr.Dropdown(
         choices=models, value=current if current in models else (models[0] if models else None)
@@ -88,221 +91,206 @@ async def refresh_available_models():
 
 
 async def pull_model_handler(model_name: str):
-    """Handle model pulling with progress feedback"""
-    if not model_name.strip():
-        add_debug_output("ERROR: No model name provided for pulling")
-        return "❌ Please enter a model name", gr.Dropdown()
+    """Handles the model pull operation with feedback."""
+    if not model_name or not model_name.strip():
+        add_debug_output("ERROR: No model name provided for pulling.")
+        return "❌ Please enter a model name", gr.Dropdown.update()
 
-    try:
-        add_debug_output(f"Starting model pull for: {model_name.strip()}")
-        result = await OllamaModelManager().pull_model(model_name.strip())
+    model_name = model_name.strip()
+    add_debug_output(f"Starting model pull for: {model_name}")
+    result = await OllamaModelManager().pull_model(model_name)
 
-        if result["success"]:
-            models = await OllamaModelManager().get_available_models()
-            dropdown_update = gr.Dropdown(choices=models, value=model_name.strip())
-            add_debug_output(f"SUCCESS: Model {model_name.strip()} pulled successfully")
-            return f"✅ {result['message']}", dropdown_update
-        else:
-            add_debug_output(f"ERROR: Model pull failed - {result['message']}")
-            return f"❌ {result['message']}", gr.Dropdown()
-
-    except Exception as e:
-        add_debug_output(f"EXCEPTION during model pull: {str(e)}")
-        return f"❌ Error during model pull: {str(e)}", gr.Dropdown()
+    if result["success"]:
+        add_debug_output(f"SUCCESS: Model {model_name} pulled.")
+        updated_choices = await OllamaModelManager().get_available_models()
+        return f"✅ {result['message']}", gr.Dropdown.update(choices=updated_choices, value=model_name)
+    else:
+        add_debug_output(f"ERROR: Model pull failed - {result['message']}")
+        return f"❌ {result['message']}", gr.Dropdown.update()
 
 
 async def switch_model_handler(model_name: str):
-    """Handle model switching"""
+    """Handles switching the active AI model."""
     if not model_name:
-        add_debug_output("ERROR: No model selected for switching")
         return "❌ Please select a model", await get_status_html()
+    add_debug_output(f"Switching to model: {model_name}")
+    set_current_model(model_name)
+    status_html = await get_status_html()
+    add_debug_output(f"SUCCESS: Switched to model {model_name}")
+    return f"✅ Switched to model: {model_name}", status_html
+
+
+# --- Core Analysis and UI Functions ---
+
+async def run_comprehensive_analysis(progress=gr.Progress(track_tqdm=True)):
+    """
+    Runs the full suite of analyses: security scan, graph insights, research conclusions,
+    and refreshes all visualizations. This is the single main function for the UI.
+    """
+    progress(0, desc="Starting Comprehensive Analysis...")
+    add_debug_output("Starting comprehensive analysis...")
 
     try:
-        add_debug_output(f"Switching to model: {model_name}")
-        set_current_model(model_name)
-        status_html = await get_status_html()
-        add_debug_output(f"SUCCESS: Switched to model {model_name}")
-        return f"✅ Switched to model: {model_name}", status_html
-    except Exception as e:
-        add_debug_output(f"ERROR switching model: {str(e)}")
-        status_html = await get_status_html()
-        return f"❌ Error switching model: {str(e)}", status_html
-
-
-# --- UI Layout and Event Handlers (Largely Unchanged) ---
-async def analyze_security_threats(scan_type: str, progress=gr.Progress(track_tqdm=True)):
-    progress(0, desc="Starting Scan...")
-    add_debug_output(f"Starting {scan_type} Scan...")
-    try:
-        progress(0.2, desc="Querying database and analyzing...")
-        result_str = await (
-            run_full_scan() if scan_type == "Full Scan" else run_quick_scan()
-        )
-        progress(1, desc="Done!")
-        add_debug_output("Analysis completed.")
-        return result_str
-    except Exception as e:
-        add_debug_output(f"CRITICAL ERROR in analysis: {str(e)}")
-        return f"❌ Analysis failed catastrophically: {str(e)}"
-
-
-async def refresh_dashboard_data():
-    add_debug_output("Refreshing all dashboard visualizations...")
-    try:
-        net_viz, risk_map, time_plot = await asyncio.gather(
+        # Run all tasks concurrently for efficiency
+        progress(0.1, desc="Querying DB & running AI analyses...")
+        tasks = [
+            run_full_scan(),
+            analyze_graphs_with_agent(),
+            generate_research_conclusions_with_agent(),
             create_network_visualization(),
             create_risk_heatmap(),
             create_time_series_plot(),
-        )
-        add_debug_output("Dashboard data refreshed successfully.")
-        return net_viz, risk_map, time_plot
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        progress(0.9, desc="Finalizing reports and visualizations...")
+
+        # Unpack results safely, checking for exceptions
+        (security_res, graph_res, research_res, net_viz_res, risk_map_res, time_plot_res) = results
+
+        # Helper to format error messages for display
+        def format_error(item, item_name):
+            if isinstance(item, Exception):
+                add_debug_output(f"ERROR in {item_name}: {item}")
+                return f"❌ {item_name} failed: {str(item)}"
+            return item
+        
+        # Helper to create an error figure for plots
+        error_fig = lambda e: go.Figure().add_annotation(text=f"Error loading plot:\n{e}", x=0.5, y=0.5, showarrow=False)
+
+        security_output = format_error(security_res, "Security Analysis")
+        graph_output = format_error(graph_res, "Graph Analysis")
+        research_output = format_error(research_res, "Research Conclusions")
+        
+        net_viz = net_viz_res if not isinstance(net_viz_res, Exception) else error_fig(net_viz_res)
+        risk_map = risk_map_res if not isinstance(risk_map_res, Exception) else error_fig(risk_map_res)
+        time_plot = time_plot_res if not isinstance(time_plot_res, Exception) else error_fig(time_plot_res)
+
+        add_debug_output("Comprehensive analysis processing complete.")
+        progress(1, desc="Analysis Complete!")
+        
+        return security_output, graph_output, research_output, net_viz, risk_map, time_plot
+
     except Exception as e:
-        add_debug_output(f"ERROR refreshing dashboard: {str(e)}")
-        fig_err = go.Figure().add_annotation(text=f"Error: {str(e)}", x=0.5, y=0.5)
-        return fig_err, fig_err, fig_err
+        error_msg = f"❌ A critical error occurred in the handler: {str(e)}"
+        add_debug_output(f"CRITICAL ERROR in run_comprehensive_analysis: {str(e)}")
+        error_fig_instance = go.Figure().add_annotation(text=f"Critical Error: {e}", x=0.5, y=0.5, showarrow=False)
+        return error_msg, error_msg, error_msg, error_fig_instance, error_fig_instance, error_fig_instance
 
 
 def create_gradio_interface():
+    """Creates the entire Gradio UI application in a single-page layout."""
     with gr.Blocks(
-        title="AD Red Team Analysis Dashboard",
+        title="Los Alamos Security Breach Dashboard",
         theme=gr.themes.Default(primary_hue="orange"),
     ) as demo:
+        # --- Header ---
         gr.HTML(
-            """<div style='text-align: center; margin: 20px;'><h1 style='font-size: 2.5rem;'>🔒 AD Red Team Analysis Dashboard</h1></div>"""
+            """<div style='text-align: center; margin: 20px;'>
+            <h1 style='font-size: 2.5rem;'>🔒 Los Alamos Security Breach Dashboard</h1>
+            <p style='font-size: 1.2rem; color: #666;'>A Unified Dashboard for AI-Powered Security Analysis</p>
+            </div>"""
         )
 
-        with gr.Tabs():
-            with gr.TabItem("🔍 Security Analysis"):
-                with gr.Row():
-                    with gr.Column(scale=2):
-                        gr.Markdown("## Analysis Control")
-                        scan_dropdown = gr.Dropdown(
-                            choices=["Quick Scan", "Full Scan"],
-                            label="Select Scan Type",
-                            value="Quick Scan",
-                        )
-                        with gr.Row():
-                            analyze_btn = gr.Button("🚀 Run Scan", variant="primary")
-                            refresh_data_btn = gr.Button("🔄 Refresh Data")
-                        analysis_output = gr.Markdown(
-                            value="*Analysis results will appear here...*"
-                        )
+        # --- Main Control Button ---
+        with gr.Row():
+            run_all_btn = gr.Button(
+                "🚀 Run Comprehensive Analysis", variant="primary", size="lg"
+            )
 
-                    with gr.Column(scale=3):
-                        gr.Markdown("## Real-time Visualizations")
-                        with gr.Tabs():
-                            with gr.TabItem("Network Graph"):
-                                network_plot = gr.Plot()
-                            with gr.TabItem("Risk Heatmap"):
-                                risk_plot = gr.Plot()
-                            with gr.TabItem("Time Series"):
-                                time_plot = gr.Plot()
-            # Model Management Tab
-            with gr.TabItem("🤖 Model Management", id="model_tab"):
-                with gr.Row():
-                    with gr.Column():
-                        gr.HTML("<h2>Available Models</h2>")
+        # --- Visualizations Section ---
+        gr.Markdown("--- \n ## 📊 Live Data Visualizations")
+        with gr.Row():
+            network_plot = gr.Plot(label="Network Topology")
+            risk_plot = gr.Plot(label="User Risk Heatmap")
+            time_plot = gr.Plot(label="Hourly Event Timeline")
+        
+        # --- Analysis Reports Section ---
+        gr.Markdown("--- \n ## 📝 AI-Powered Analysis Reports")
+        with gr.Accordion("🔒 Security Analysis Report", open=True):
+            security_report_output = gr.Markdown("*Run analysis to generate the security report...*")
+        
+        with gr.Accordion("🤖 AI Graph Insights", open=True):
+            graph_analysis_output = gr.Markdown("*Run analysis to generate AI insights on the graphs...*")
+        
+        with gr.Accordion("🎓 Research Paper Conclusions", open=True):
+            research_conclusions_output = gr.Markdown("*Run analysis to generate research-ready conclusions...*")
+        
+        # --- Advanced Settings and System Info ---
+        with gr.Accordion("⚙️ Advanced Settings & System Status", open=False):
+            with gr.Row():
+                with gr.Column(scale=1):
+                    gr.Markdown("## System Status")
+                    status_output = gr.HTML()
+                with gr.Column(scale=2):
+                    gr.Markdown("## Model Management")
+                    with gr.Row():
+                        available_models_dd = gr.Dropdown(label="Installed Models", info="Select an installed model")
+                        refresh_models_btn = gr.Button("🔄", size="sm")
+                        switch_model_btn = gr.Button("🚀 Switch", size="sm")
+                    with gr.Row():
+                        model_to_pull_tb = gr.Textbox(label="Install Model", placeholder="e.g., gemma2:9b")
+                        pull_model_btn = gr.Button("📥 Install", size="sm")
+                    model_status_md = gr.Markdown("*Model operations will be reported here...*")
 
-                        available_models = gr.Dropdown(
-                            label="Installed Models",
-                            choices=[],
-                            value=None,
-                            info="Select from models already installed",
-                        )
+            with gr.Row():
+                 with gr.Column():
+                    gr.Markdown("## Debug Information")
+                    debug_toggle = gr.Checkbox(label="Enable Debug Mode", value=get_debug_mode())
+                    clear_debug_btn = gr.Button("🗑️ Clear Debug Log")
+                    debug_output_display = gr.Textbox(label="Debug Log", lines=15, interactive=False)
 
-                        with gr.Row():
-                            refresh_models_btn = gr.Button("🔄 Refresh Models", size="sm")
-                            switch_model_btn = gr.Button(
-                                "🔀 Switch Model", size="sm", variant="secondary"
-                            )
+        # --- Event Handlers ---
 
-                    with gr.Column():
-                        gr.HTML("<h2>Model Installation</h2>")
-
-                        recommended_models = gr.Dropdown(
-                            label="Recommended Models",
-                            choices=OllamaModelManager().get_recommended_models(),
-                            info="Optimized models for security analysis",
-                        )
-
-                        custom_model = gr.Textbox(
-                            label="Custom Model Name",
-                            placeholder="e.g., llama3.1:8b, mistral:7b",
-                            info="Enter any model name from Ollama registry",
-                        )
-
-                        with gr.Row():
-                            pull_recommended_btn = gr.Button(
-                                "📥 Install Recommended", size="sm", variant="primary"
-                            )
-                            pull_custom_btn = gr.Button(
-                                "📥 Install Custom", size="sm", variant="primary"
-                            )
-
-                model_status = gr.Markdown(
-                    label="Model Management Status",
-                    value="*Model operations will be reported here...*",
-                )
-
-            with gr.TabItem("🔧 Debug & System"):
-                with gr.Row():
-                    with gr.Column():
-                        gr.Markdown("## System Status")
-                        status_output = gr.HTML()
-                        debug_toggle = gr.Checkbox(label="Enable Debug Mode", value=False)
-                        clear_debug_btn = gr.Button("🗑️ Clear Debug Log")
-                    with gr.Column(scale=2):
-                        gr.Markdown("## Debug Output")
-                        debug_output_display = gr.Textbox(
-                            label="Debug Log", lines=15, interactive=False
-                        )
-
-        # Event Handlers
-        analyze_btn.click(
-            fn=analyze_security_threats,
-            inputs=[scan_dropdown],
-            outputs=[analysis_output],
+        # Main button click
+        run_all_btn.click(
+            fn=run_comprehensive_analysis,
+            inputs=None,
+            outputs=[
+                security_report_output,
+                graph_analysis_output,
+                research_conclusions_output,
+                network_plot,
+                risk_plot,
+                time_plot,
+            ],
+            api_name="run_analysis"
         )
-        refresh_data_btn.click(
-            fn=refresh_dashboard_data,
-            outputs=[network_plot, risk_plot, time_plot],
-        )
-        debug_toggle.change(
-            fn=toggle_debug_mode,
-            inputs=[debug_toggle],
-            outputs=[status_output, debug_output_display],
-        )
+        
+        # Model Management handlers
+        refresh_models_btn.click(fn=refresh_available_models, outputs=[available_models_dd])
+        switch_model_btn.click(fn=switch_model_handler, inputs=[available_models_dd], outputs=[model_status_md, status_output])
+        pull_model_btn.click(fn=pull_model_handler, inputs=[model_to_pull_tb], outputs=[model_status_md, available_models_dd])
+
+        # Debug handlers
+        debug_toggle.change(fn=toggle_debug_mode, inputs=[debug_toggle], outputs=[status_output, debug_output_display])
         clear_debug_btn.click(fn=clear_debug_output, outputs=[debug_output_display])
 
-        refresh_models_btn.click(
-            fn=refresh_available_models, outputs=[available_models]
-        )
-
-        switch_model_btn.click(
-            fn=switch_model_handler,
-            inputs=[available_models],
-            outputs=[model_status, status_output],
-        )
-
-        pull_recommended_btn.click(
-            fn=pull_model_handler,
-            inputs=[recommended_models],
-            outputs=[model_status, available_models],
-        )
-
-        pull_custom_btn.click(
-            fn=pull_model_handler,
-            inputs=[custom_model],
-            outputs=[model_status, available_models],
-        )
-
+        # Initial dashboard load
         async def init_dashboard():
-            add_debug_output("Initializing dashboard...")
-            status, debug_log_out = await asyncio.gather(
-                get_status_html(), asyncio.to_thread(get_debug_output)
+            """Initializes the dashboard state on load."""
+            add_debug_output("Initializing streamlined dashboard...")
+            # Concurrently fetch initial data
+            status, debug_log, models, net_viz, risk_map, time_p = await asyncio.gather(
+                get_status_html(),
+                asyncio.to_thread(get_debug_output),
+                refresh_available_models(),
+                create_network_visualization(),
+                create_risk_heatmap(),
+                create_time_series_plot()
             )
-            add_debug_output("Dashboard loaded.")
-            return status, get_debug_output()
+            add_debug_output("Dashboard loaded. Ready for analysis.")
+            return status, debug_log, models, net_viz, risk_map, time_p
 
-        demo.load(fn=init_dashboard, outputs=[status_output, debug_output_display])
+        demo.load(
+            fn=init_dashboard,
+            outputs=[
+                status_output,
+                debug_output_display,
+                available_models_dd,
+                network_plot,
+                risk_plot,
+                time_plot
+            ]
+        )
+
     return demo
