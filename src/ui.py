@@ -212,7 +212,7 @@ def create_gradio_interface():
         gr.HTML(
             """<div style='text-align: center; margin: 20px;'>
             <h1 style='font-size: 2.5rem; color: #FFFFFF;'>🔒 Los Alamos Security Breach Dashboard</h1>
-            <p style='font-size: 1.2rem; color: #BBBBBB;'>A Unified Dashboard for AI-Powered Security Analysis</p>
+            <p style='font-size: 1.2rem; color: #BBBBBB;'>A Unified Dashboard for AI-Powered Breach Analysis</p>
             </div>"""
         )
 
