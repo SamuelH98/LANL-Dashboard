@@ -68,7 +68,7 @@ async def get_status_html() -> str:
         else f"🔴 {ad_agent.get_current_model()} Not Ready",
         f"🔧 Debug Mode: {'ON' if get_debug_mode() else 'OFF'}",
     ]
-    return f"""<div style="padding: 10px; background: #222; border-radius: 5px;">{'<br>'.join(statuses)}</div>"""
+    return f"""<div style="padding: 10px; background: #222; border-radius: 5px; color: white;">{'<br>'.join(statuses)}</div>"""
 
 
 async def toggle_debug_mode(enabled: bool):
@@ -122,6 +122,17 @@ async def switch_model_handler(model_name: str):
 
 # --- Core Analysis and UI Functions ---
 
+def apply_dark_theme(fig):
+    """Applies a dark theme to a Plotly figure."""
+    if isinstance(fig, go.Figure):
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#FFFFFF")
+        )
+    return fig
+
 async def run_comprehensive_analysis(progress=gr.Progress(track_tqdm=True)):
     """
     Runs the full suite of analyses: security scan, graph insights, research conclusions,
@@ -154,16 +165,18 @@ async def run_comprehensive_analysis(progress=gr.Progress(track_tqdm=True)):
                 return f"❌ {item_name} failed: {str(item)}"
             return item
         
-        # Helper to create an error figure for plots
-        error_fig = lambda e: go.Figure().add_annotation(text=f"Error loading plot:\n{e}", x=0.5, y=0.5, showarrow=False)
+        # Helper to create a dark-themed error figure for plots
+        def error_fig_dark(e):
+            fig = go.Figure().add_annotation(text=f"Error loading plot:\n{e}", x=0.5, y=0.5, showarrow=False)
+            return apply_dark_theme(fig)
 
         security_output = format_error(security_res, "Security Analysis")
         graph_output = format_error(graph_res, "Graph Analysis")
         research_output = format_error(research_res, "Research Conclusions")
         
-        net_viz = net_viz_res if not isinstance(net_viz_res, Exception) else error_fig(net_viz_res)
-        risk_map = risk_map_res if not isinstance(risk_map_res, Exception) else error_fig(risk_map_res)
-        time_plot = time_plot_res if not isinstance(time_plot_res, Exception) else error_fig(time_plot_res)
+        net_viz = apply_dark_theme(net_viz_res) if not isinstance(net_viz_res, Exception) else error_fig_dark(net_viz_res)
+        risk_map = apply_dark_theme(risk_map_res) if not isinstance(risk_map_res, Exception) else error_fig_dark(risk_map_res)
+        time_plot = apply_dark_theme(time_plot_res) if not isinstance(time_plot_res, Exception) else error_fig_dark(time_plot_res)
 
         add_debug_output("Comprehensive analysis processing complete.")
         progress(1, desc="Analysis Complete!")
@@ -174,20 +187,30 @@ async def run_comprehensive_analysis(progress=gr.Progress(track_tqdm=True)):
         error_msg = f"❌ A critical error occurred in the handler: {str(e)}"
         add_debug_output(f"CRITICAL ERROR in run_comprehensive_analysis: {str(e)}")
         error_fig_instance = go.Figure().add_annotation(text=f"Critical Error: {e}", x=0.5, y=0.5, showarrow=False)
-        return error_msg, error_msg, error_msg, error_fig_instance, error_fig_instance, error_fig_instance
+        dark_error_fig = apply_dark_theme(error_fig_instance)
+        return error_msg, error_msg, error_msg, dark_error_fig, dark_error_fig, dark_error_fig
 
 
 def create_gradio_interface():
     """Creates the entire Gradio UI application in a single-page layout."""
     with gr.Blocks(
         title="Los Alamos Security Breach Dashboard",
-        theme=gr.themes.Default(primary_hue="orange"),
+        theme=gr.themes.Default(primary_hue="orange", secondary_hue="blue").set(
+            body_background_fill="#121212",
+            body_text_color="#FFFFFF",
+            block_background_fill="#1E1E1E",
+            block_border_width="1px",
+            block_title_text_color="#FFFFFF",
+            border_color_primary="#333333",
+            button_primary_background_fill="orange",
+            button_primary_text_color="#000000",
+        ),
     ) as demo:
         # --- Header ---
         gr.HTML(
             """<div style='text-align: center; margin: 20px;'>
-            <h1 style='font-size: 2.5rem;'>🔒 Los Alamos Security Breach Dashboard</h1>
-            <p style='font-size: 1.2rem; color: #666;'>A Unified Dashboard for AI-Powered Security Analysis</p>
+            <h1 style='font-size: 2.5rem; color: #FFFFFF;'>🔒 Los Alamos Security Breach Dashboard</h1>
+            <p style='font-size: 1.2rem; color: #BBBBBB;'>A Unified Dashboard for AI-Powered Security Analysis</p>
             </div>"""
         )
 
@@ -279,7 +302,15 @@ def create_gradio_interface():
                 create_time_series_plot()
             )
             add_debug_output("Dashboard loaded. Ready for analysis.")
-            return status, debug_log, models, net_viz, risk_map, time_p
+            # Apply dark theme to initial plots
+            return (
+                status, 
+                debug_log, 
+                models, 
+                apply_dark_theme(net_viz), 
+                apply_dark_theme(risk_map), 
+                apply_dark_theme(time_p)
+            )
 
         demo.load(
             fn=init_dashboard,
