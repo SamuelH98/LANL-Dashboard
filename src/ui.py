@@ -94,7 +94,7 @@ async def pull_model_handler(model_name: str):
     """Handles the model pull operation with feedback."""
     if not model_name or not model_name.strip():
         add_debug_output("ERROR: No model name provided for pulling.")
-        return "❌ Please enter a model name", gr.Dropdown.update()
+        return "❌ Please enter a model name", gr.update()
 
     model_name = model_name.strip()
     add_debug_output(f"Starting model pull for: {model_name}")
@@ -103,10 +103,12 @@ async def pull_model_handler(model_name: str):
     if result["success"]:
         add_debug_output(f"SUCCESS: Model {model_name} pulled.")
         updated_choices = await OllamaModelManager().get_available_models()
-        return f"✅ {result['message']}", gr.Dropdown.update(choices=updated_choices, value=model_name)
+        # FIX: Changed gr.Dropdown.update to gr.Dropdown
+        return f"✅ {result['message']}", gr.Dropdown(choices=updated_choices, value=model_name)
     else:
         add_debug_output(f"ERROR: Model pull failed - {result['message']}")
-        return f"❌ {result['message']}", gr.Dropdown.update()
+        # FIX: Changed gr.Dropdown.update to gr.update (as no change is needed)
+        return f"❌ {result['message']}", gr.update()
 
 
 async def switch_model_handler(model_name: str):
@@ -214,12 +216,6 @@ def create_gradio_interface():
             </div>"""
         )
 
-        # --- Main Control Button ---
-        with gr.Row():
-            run_all_btn = gr.Button(
-                "🚀 Run Comprehensive Analysis", variant="primary", size="lg"
-            )
-
         # --- Visualizations Section ---
         gr.Markdown("--- \n ## 📊 Live Data Visualizations")
         with gr.Row():
@@ -229,6 +225,13 @@ def create_gradio_interface():
         
         # --- Analysis Reports Section ---
         gr.Markdown("--- \n ## 📝 AI-Powered Analysis Reports")
+        
+        # --- Main Control Button ---
+        with gr.Row():
+            run_all_btn = gr.Button(
+                "🚀 Run Comprehensive Analysis", variant="primary", size="lg"
+            )
+
         with gr.Accordion("🔒 Security Analysis Report", open=True):
             security_report_output = gr.Markdown("*Run analysis to generate the security report...*")
         
@@ -246,13 +249,28 @@ def create_gradio_interface():
                     status_output = gr.HTML()
                 with gr.Column(scale=2):
                     gr.Markdown("## Model Management")
-                    with gr.Row():
-                        available_models_dd = gr.Dropdown(label="Installed Models", info="Select an installed model")
-                        refresh_models_btn = gr.Button("🔄", size="sm")
-                        switch_model_btn = gr.Button("🚀 Switch", size="sm")
-                    with gr.Row():
-                        model_to_pull_tb = gr.Textbox(label="Install Model", placeholder="e.g., gemma2:9b")
-                        pull_model_btn = gr.Button("📥 Install", size="sm")
+                    with gr.Tabs():
+                        with gr.TabItem("Switch Active Model"):
+                            available_models_dd = gr.Dropdown(label="Installed Models", info="Select an installed model to use for analysis")
+                            with gr.Row():
+                                refresh_models_btn = gr.Button("🔄 Refresh List")
+                                switch_model_btn = gr.Button("🚀 Switch to Selected Model")
+                        
+                        with gr.TabItem("Install New Model"):
+                            recommended_models_dd = gr.Dropdown(
+                                label="Recommended Models",
+                                choices=OllamaModelManager().get_recommended_models(),
+                                info="Optimized models for security analysis",
+                            )
+                            pull_recommended_btn = gr.Button("📥 Install Recommended", variant="primary")
+                            
+                            custom_model_tb = gr.Textbox(
+                                label="Or, Install a Custom Model",
+                                placeholder="e.g., llama3.1:8b, mistral:7b",
+                                info="Enter any model name from Ollama registry",
+                            )
+                            pull_custom_btn = gr.Button("📥 Install Custom", variant="primary")
+                    
                     model_status_md = gr.Markdown("*Model operations will be reported here...*")
 
             with gr.Row():
@@ -282,7 +300,8 @@ def create_gradio_interface():
         # Model Management handlers
         refresh_models_btn.click(fn=refresh_available_models, outputs=[available_models_dd])
         switch_model_btn.click(fn=switch_model_handler, inputs=[available_models_dd], outputs=[model_status_md, status_output])
-        pull_model_btn.click(fn=pull_model_handler, inputs=[model_to_pull_tb], outputs=[model_status_md, available_models_dd])
+        pull_recommended_btn.click(fn=pull_model_handler, inputs=[recommended_models_dd], outputs=[model_status_md, available_models_dd])
+        pull_custom_btn.click(fn=pull_model_handler, inputs=[custom_model_tb], outputs=[model_status_md, available_models_dd])
 
         # Debug handlers
         debug_toggle.change(fn=toggle_debug_mode, inputs=[debug_toggle], outputs=[status_output, debug_output_display])
