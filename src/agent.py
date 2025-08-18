@@ -6,16 +6,13 @@ from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 import os
 import json
-import asyncio
 import aiohttp
 import pandas as pd
 from datetime import datetime
-import logging
 import traceback
 import tiktoken
 from collections import Counter
 
-from pydantic import BaseModel, Field
 from neo4j import GraphDatabase, basic_auth
 from dotenv import load_dotenv
 import litellm
@@ -59,34 +56,6 @@ def debug_log(message: str, data: Any = None):
 def add_debug_output(message: str):
     debug_log(message)
 
-
-# --- Enhanced Pydantic Models ---
-class SecurityAnalysis(BaseModel):
-    findings: List[str] = Field(description="List of security findings")
-    suspicious_activities: List[str] = Field(description="Suspicious activities detected")
-    recommendations: List[str] = Field(description="Security recommendations")
-    summary: str = Field(description="Executive summary of the analysis")
-    risk_level: str = Field(description="Overall risk level: LOW, MEDIUM, HIGH, CRITICAL")
-    anomaly_scores: Dict[str, float] = Field(
-        default={}, description="Anomaly scores for high-risk users"
-    )
-
-
-class GraphAnalysis(BaseModel):
-    network_insights: List[str] = Field(description="Network topology insights")
-    risk_patterns: List[str] = Field(description="Risk heatmap patterns identified")
-    temporal_findings: List[str] = Field(description="Time series analysis findings")
-    graph_summary: str = Field(description="Overall graph analysis summary")
-    key_metrics: Dict[str, Any] = Field(default={}, description="Key quantitative metrics")
-
-
-class ResearchConclusion(BaseModel):
-    methodology_summary: str = Field(description="Summary of analytical methodology")
-    key_findings: List[str] = Field(description="Primary research findings")
-    statistical_insights: List[str] = Field(description="Statistical analysis results")
-    limitations: List[str] = Field(description="Study limitations")
-    future_research: List[str] = Field(description="Recommendations for future research")
-    conclusion: str = Field(description="Overall research conclusion")
 
 
 class Neo4jConnection:
