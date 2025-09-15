@@ -13,14 +13,15 @@ from agent import (
     get_hourly_data,
     get_user_behavior_data,
     add_debug_output,
+    AnalysisAgent
 )
 
 
-async def create_network_visualization():
+async def create_network_visualization(agent: AnalysisAgent):
     """Create network visualization, fixed to handle the agent's flat data structure."""
     add_debug_output("Creating network visualization...")
     try:
-        graph_data = await get_graph_for_visualization()
+        graph_data = await get_graph_for_visualization(agent)
         if not graph_data["success"] or not graph_data["data"]:
             return go.Figure().add_annotation(
                 text="No valid graph connections found",
@@ -111,11 +112,11 @@ async def create_network_visualization():
         return go.Figure().add_annotation(text=f"Error: {str(e)}", x=0.5, y=0.5)
 
 
-async def create_risk_heatmap():
+async def create_risk_heatmap(agent: AnalysisAgent):
     """Create risk heatmap, fixed to use the correct data keys from the agent."""
     add_debug_output("Creating risk heatmap...")
     try:
-        behavior_data = await get_user_behavior_data()
+        behavior_data = await get_user_behavior_data(agent)
         if not behavior_data["success"] or not behavior_data["data"]:
             return go.Figure().add_annotation(
                 text="No behavior data available", x=0.5, y=0.5, showarrow=False
@@ -150,11 +151,11 @@ async def create_risk_heatmap():
         return go.Figure().add_annotation(text=f"Error: {str(e)}", x=0.5, y=0.5)
 
 
-async def create_time_series_plot():
+async def create_time_series_plot(agent: AnalysisAgent):
     """Create time series plot, fixed to use the correct data keys from the agent."""
     add_debug_output("Creating time series plot...")
     try:
-        hourly_data = await get_hourly_data()
+        hourly_data = await get_hourly_data(agent)
         if not hourly_data["success"] or not hourly_data["data"].get("hourly_data"):
             return go.Figure().add_annotation(
                 text="No hourly data available", x=0.5, y=0.5, showarrow=False

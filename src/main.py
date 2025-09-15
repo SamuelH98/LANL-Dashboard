@@ -2,21 +2,22 @@
 Simplified Main entry point for the Active Directory Red Team Analysis Dashboard
 """
 
+from database import Neo4jDatabase
+from agent import AnalysisAgent
 from ui import create_gradio_interface
+import os
 
 
 def main():
     """
-    Main function to start the AD Red Team Analysis Dashboard.
+    Main function to start the LANL Dashboard.
     """
-    print("🔒 Starting AD Red Team Analysis Dashboard...")
-    print("📋 System Requirements:")
-    print("   • Neo4j database running (bolt://localhost:7687)")
-    print("   • Ollama service running (http://127.0.0.1:11434)")
-    print("   • .env file configured with database credentials")
-    print("🚀 Launching dashboard on http://localhost:7860")
+    print("🔒 Starting LANL Dashboard...")
 
-    app = create_gradio_interface()
+    db = Neo4jDatabase()
+    agent = AnalysisAgent(db)
+    print("🚀 Launching dashboard on http://localhost:7860")
+    app = create_gradio_interface(agent)
     app.launch(server_name="0.0.0.0", server_port=7860)
 
 

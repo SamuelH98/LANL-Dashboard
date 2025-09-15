@@ -13,8 +13,8 @@ import traceback
 import tiktoken
 from collections import Counter
 
-from neo4j import GraphDatabase, basic_auth
 from dotenv import load_dotenv
+from database import Neo4jDatabase
 import litellm
 
 # --- Boilerplate and Helpers ---
@@ -58,40 +58,9 @@ def add_debug_output(message: str):
 
 
 
-class Neo4jConnection:
-    def __init__(self):
-        self.driver = GraphDatabase.driver(
-            os.getenv("NEO4J_URI", "bolt://localhost:7687"),
-            auth=basic_auth(
-                os.getenv("NEO4J_USERNAME", "neo4j"),
-                os.getenv("NEO4J_PASSWORD", "password123"),
-            ),
-        )
-
-    def close(self):
-        if self.driver:
-            self.driver.close()
-
-    def execute_query(
-        self, query: str, parameters: Dict[str, Any] = None, database: str = "authdata"
-    ):
-        try:
-            with self.driver.session(database=database) as session:
-                result = session.run(query, parameters or {})
-                records = [record.data() for record in result]
-                debug_log(
-                    f"Query returned {len(records)} records",
-                    {"query": query.split("\n", 1)[0]},
-                )
-                return {"success": True, "records": records, "error": None}
-        except Exception as e:
-            debug_log(f"Neo4j query error: {str(e)}", {"query": query})
-            return {"success": False, "records": [], "error": str(e)}
-
-
 class OllamaModelManager:
     def __init__(
-        self, ollama_url: str = os.getenv("OLLAMA_API_BASE", "http://127.0.0.1:11434")
+        self, ollama_url: str = os.getenv("OLLAMA_API_BASE", "http://ollama:11434")
     ):
         self.ollama_url = ollama_url
 
@@ -105,7 +74,7 @@ class OllamaModelManager:
         except Exception as e:
             debug_log(f"Error getting models: {e}")
             return []
-
+ 
     async def check_ollama_status(self) -> bool:
         try:
             async with aiohttp.ClientSession() as s:
@@ -154,11 +123,11 @@ class OllamaModelManager:
 
 
 # --- Enhanced Core Agent Logic ---
-class ADAnalysisAgent:
-    def __init__(self):
+class AnalysisAgent:
+    def __init__(self, db: Optional[Neo4jDatabase] = None):
+        self.db = db if db is not None else Neo4jDatabase()
         self.model = "ollama/gemma3:1b"
         self.model_manager = OllamaModelManager()
-        self.connection = Neo4jConnection()
         self.max_prompt_tokens = 3800
         
         # Enhanced system prompts for different analysis types
@@ -194,12 +163,27 @@ class ADAnalysisAgent:
     def get_current_model(self) -> str:
         return self.model.replace("ollama/", "")
 
+    def execute_query(
+        self, query: str, parameters: Dict[str, Any] = None, database: str = "authdata"
+    ):
+        try:
+            result = self.db.execute_query(query, parameters, database)
+            debug_log(
+                f"Query returned {len(result.get('records', []))} records",
+                {"query": query.split("\n", 1)[0]},
+            )
+            return result
+        except Exception as e:
+            debug_log(f"Neo4j query error: {str(e)}", {"query": query})
+            return {"success": False, "records": [], "error": str(e)}
+
+
     async def analyze_with_graph(self, scan_type: str = "quick") -> Dict[str, Any]:
         try:
             limit = 2000 if scan_type == "full" else 500
 
             events_query = f"MATCH (u:User)<-[:FROM_USER]-(ae:AuthEvent)-[:TO_COMPUTER]->(c:Computer) RETURN u.name as username, c.name as computer_name, ae.success as success, ae.logon_type as logon_type, ae.auth_type as auth_type, ae.is_redteam as is_redteam, ae.timestamp as timestamp ORDER BY ae.timestamp DESC LIMIT {limit}"
-            events_result = self.connection.execute_query(events_query)
+            events_result = self.execute_query(events_query)
 
             if not events_result.get("records"):
                 return {
@@ -258,9 +242,9 @@ class ADAnalysisAgent:
         """Analyze visualization data and provide insights about each graph type"""
         try:
             # Get data for all visualization types
-            network_data = await get_graph_for_visualization()
-            risk_data = await get_user_behavior_data()
-            temporal_data = await get_hourly_data()
+            network_data = await get_graph_for_visualization(self.agent)
+            risk_data = await get_user_behavior_data(self.agent)
+            temporal_data = await get_hourly_data(self.agent)
             
             # Create analysis summary
             analysis_data = {
@@ -457,24 +441,11 @@ class ADAnalysisAgent:
             self.connection.close()
 
 
-# --- Global Instance and Interface Functions ---
-ad_agent = ADAnalysisAgent()
-
-
-def check_neo4j_status() -> bool:
-    try:
-        conn = Neo4jConnection()
-        conn.driver.verify_connectivity()
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-async def check_llm_status() -> bool:
+# --- Interface Functions ---
+async def check_llm_status(agent: AnalysisAgent) -> bool:
     try:
         await litellm.acompletion(
-            model=ad_agent.model,
+            model=agent.model,
             messages=[{"role": "user", "content": "ping"}],
             max_tokens=5,
             timeout=10,
@@ -484,43 +455,44 @@ async def check_llm_status() -> bool:
         return False
 
 
-async def get_available_models() -> List[str]:
-    return await ad_agent.model_manager.get_available_models()
+async def get_available_models(agent: AnalysisAgent) -> List[str]:
+    return await agent.model_manager.get_available_models()
 
 
-def get_recommended_models() -> List[str]:
-    return ad_agent.model_manager.get_recommended_models()
+def get_recommended_models(agent: AnalysisAgent) -> List[str]:
+    return agent.model_manager.get_recommended_models()
 
 
-def set_current_model(model_name: str):
-    ad_agent.set_model(model_name)
+def set_current_model(agent: AnalysisAgent, model_name: str):
+    agent.set_model(model_name)
 
 
-def get_current_model() -> str:
-    return ad_agent.get_current_model()
+def get_current_model(agent: AnalysisAgent) -> str:
+    return agent.get_current_model()
 
 
-async def run_full_scan() -> str:
-    return format_analysis_result(await ad_agent.analyze_with_graph("full"))
+async def run_full_scan(agent: AnalysisAgent) -> str:
+    return format_analysis_result(await agent.analyze_with_graph("full"))
 
 
-async def run_quick_scan() -> str:
-    return format_analysis_result(await ad_agent.analyze_with_graph("quick"))
+async def run_quick_scan(agent: AnalysisAgent) -> str:
+    return format_analysis_result(await agent.analyze_with_graph("quick"))
 
 
 # --- New Enhanced Analysis Functions ---
-async def analyze_graphs_with_agent() -> str:
+async def analyze_graphs_with_agent(agent: AnalysisAgent) -> str:
     """Get agent's analysis of the visualization graphs"""
-    result = await ad_agent.analyze_graphs()
-    return format_graph_analysis(result)
+    result = await agent.analyze_graphs()
+    return format_analysis_result(result)
 
 
-async def generate_research_conclusions_with_agent() -> str:
-    """Generate research paper conclusions using the agent"""
-    security_analysis = await ad_agent.analyze_with_graph("full")
-    graph_analysis = await ad_agent.analyze_graphs()
-    research_result = await ad_agent.generate_research_conclusions(security_analysis, graph_analysis)
-    return format_research_conclusions(research_result)
+async def generate_research_conclusions_with_agent(agent: AnalysisAgent) -> str:
+    """Get agent's research conclusions based on previous analyses"""
+    security_analysis = await agent.analyze_with_graph("full")
+    graph_analysis = await agent.analyze_graphs()
+    research_result = await agent.generate_research_conclusions(security_analysis, graph_analysis)
+    
+    return format_analysis_result(research_result)
 
 
 def format_analysis_result(result: Dict[str, Any]) -> str:
@@ -651,34 +623,22 @@ def format_research_conclusions(result: Dict[str, Any]) -> str:
 
 
 # --- Visualization Queries (Schema-Aligned) ---
-async def get_graph_for_visualization():
-    connection = Neo4jConnection()
-    try:
-        query = "MATCH (u:User)<-[:FROM_USER]-(evt:AuthEvent)-[:TO_COMPUTER]->(c:Computer) RETURN u.name AS user_name, c.name AS computer_name, count(evt) AS connection_events ORDER BY connection_events DESC LIMIT 200"
-        result = connection.execute_query(query)
-        return {"success": result["success"], "data": result.get("records", [])}
-    finally:
-        connection.close()
+async def get_graph_for_visualization(agent: AnalysisAgent):
+    query = "MATCH (u:User)<-[:FROM_USER]-(evt:AuthEvent)-[:TO_COMPUTER]->(c:Computer) RETURN u.name AS user_name, c.name AS computer_name, count(evt) AS connection_events ORDER BY connection_events DESC LIMIT 200"
+    result = agent.execute_query(query)
+    return {"success": result["success"], "data": result.get("records", [])}
 
 
-async def get_hourly_data():
-    connection = Neo4jConnection()
-    try:
-        query = "MATCH (a:AuthEvent) WHERE a.timestamp IS NOT NULL RETURN a.timestamp.hour as hour, count(*) as event_count ORDER BY hour"
-        result = connection.execute_query(query)
-        return {
-            "success": result["success"],
-            "data": {"hourly_data": result.get("records", [])},
-        }
-    finally:
-        connection.close()
+async def get_hourly_data(agent: AnalysisAgent):
+    query = "MATCH (a:AuthEvent) WHERE a.timestamp IS NOT NULL RETURN a.timestamp.hour as hour, count(*) as event_count ORDER BY hour"
+    result = agent.execute_query(query)
+    return {
+        "success": result["success"],
+        "data": {"hourly_data": result.get("records", [])},
+    }
 
 
-async def get_user_behavior_data():
-    connection = Neo4jConnection()
-    try:
-        query = "MATCH (u:User)<-[:FROM_USER]-(ae:AuthEvent) RETURN u.name as username, count(ae) as total, sum(CASE WHEN ae.success = 'Failure' THEN 1 ELSE 0 END) as fails ORDER BY total DESC LIMIT 100"
-        result = connection.execute_query(query)
-        return {"success": result["success"], "data": result.get("records", [])}
-    finally:
-        connection.close()
+async def get_user_behavior_data(agent: AnalysisAgent):
+    query = "MATCH (u:User)<-[:FROM_USER]-(ae:AuthEvent) RETURN u.name as username, count(ae) as total, sum(CASE WHEN ae.success = 'Failure' THEN 1 ELSE 0 END) as fails ORDER BY total DESC LIMIT 100"
+    result = agent.execute_query(query)
+    return {"success": result["success"], "data": result.get("records", [])}
