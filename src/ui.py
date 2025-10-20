@@ -12,9 +12,9 @@ from agent import (
     set_debug_mode,
     get_current_model,
     set_current_model,
-    run_full_scan,
-    analyze_graphs_with_agent,
-    generate_research_conclusions_with_agent,
+    format_analysis_result,
+    format_graph_analysis,
+    format_research_conclusions,
 )
 
 from visualizations import (
@@ -28,6 +28,10 @@ from visualizations import (
 
 # --- Global state ---
 debug_output = []
+# Persist last analysis reports so the Analysis Reports panels can show stored results
+last_security_output = None
+last_graph_output = None
+last_research_output = None
 
 def add_debug_output(message: str):
     """Adds a timestamped message to the debug log."""
@@ -163,43 +167,54 @@ async def run_comprehensive_analysis(progress=gr.Progress(track_tqdm=True)):
     add_debug_output("Starting comprehensive analysis...")
 
     try:
-        # Run all tasks concurrently for efficiency
+        # Run security and graph analysis concurrently to get raw dicts
         progress(0.1, desc="Querying DB & running AI analyses...")
-        tasks = [
-            run_full_scan(analysis_agent),
-            analyze_graphs_with_agent(analysis_agent),
-            generate_research_conclusions_with_agent(analysis_agent),
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        progress(0.9, desc="Finalizing reports and visualizations...")
+        security_task = analysis_agent.analyze_with_graph("full")
+        graph_task = analysis_agent.analyze_graphs()
+        security_res, graph_res = await asyncio.gather(security_task, graph_task, return_exceptions=True)
 
-        # Unpack results safely, checking for exceptions
-        (security_res, graph_res, research_res) = results
-
-        # Helper to format error messages for display
+        # Handle exceptions from the agent calls
         def format_error(item, item_name):
             if isinstance(item, Exception):
                 add_debug_output(f"ERROR in {item_name}: {item}")
-                return f"❌ {item_name} failed: {str(item)}"
+                return {"summary": f"{item_name} failed: {str(item)}", "risk_level": "UNKNOWN"}
             return item
-        
 
-        security_output = format_error(security_res, "Security Analysis")
-        graph_output = format_error(graph_res, "Graph Analysis")
-        research_output = format_error(research_res, "Research Conclusions")
-        
+        security_dict = format_error(security_res, "Security Analysis")
+        graph_dict = format_error(graph_res, "Graph Analysis")
+
+        # Format outputs for UI display
+        security_output = format_analysis_result(security_dict)
+        graph_output = format_graph_analysis(graph_dict)
+
+        # Generate research conclusions using the already-obtained dicts (avoid duplicate LLM calls)
+        try:
+            research_dict = await analysis_agent.generate_research_conclusions(security_dict, graph_dict)
+            research_output = format_research_conclusions(research_dict)
+        except Exception as e:
+            add_debug_output(f"Research generation failed: {e}")
+            research_output = f"❌ Research generation failed: {e}"
+
+        progress(0.9, desc="Finalizing reports and visualizations...")
+
+        # Persist the latest analysis results so other UI flows (init, navigation) can display them
+        try:
+            global last_security_output, last_graph_output, last_research_output
+            last_security_output = security_output
+            last_graph_output = graph_output
+            last_research_output = research_output
+        except Exception:
+            add_debug_output("Failed to persist analysis outputs")
 
         add_debug_output("Comprehensive analysis processing complete.")
         progress(1, desc="Analysis Complete!")
-        
+
         return security_output, graph_output, research_output
 
     except Exception as e:
         error_msg = f"❌ A critical error occurred in the handler: {str(e)}"
         add_debug_output(f"CRITICAL ERROR in run_comprehensive_analysis: {str(e)}")
-        error_fig_instance = go.Figure().add_annotation(text=f"Critical Error: {e}", x=0.5, y=0.5, showarrow=False)
-        dark_error_fig = apply_dark_theme(error_fig_instance)
-        return error_msg, error_msg, error_msg, dark_error_fig, dark_error_fig, dark_error_fig
+        return error_msg, error_msg, error_msg
 
 def create_gradio_interface(agent: AnalysisAgent):
     global analysis_agent
@@ -467,6 +482,14 @@ def create_gradio_interface(agent: AnalysisAgent):
                     return create_error_fig("Initialization Failed") if is_plot else "Error"
                 return apply_dark_theme(res) if is_plot else res
 
+            # Prepare persisted analysis report values (show last results if available)
+            try:
+                sec_report = last_security_output if last_security_output is not None else "*Click 'Run Analysis' to generate insights...*"
+                graph_report = last_graph_output if last_graph_output is not None else "*Click 'Run Analysis' to generate insights...*"
+                research_report = last_research_output if last_research_output is not None else "*Click 'Run Analysis' to generate insights...*"
+            except Exception:
+                sec_report = graph_report = research_report = "*Click 'Run Analysis' to generate insights...*"
+
             return (
                 handle_result(net_viz, is_plot=True),
                 handle_result(risk_viz, is_plot=True),
@@ -474,14 +497,18 @@ def create_gradio_interface(agent: AnalysisAgent):
                 handle_result(models),
                 get_debug_output(),
                 handle_result(status),
-                handle_result(cards)
+                handle_result(cards),
+                sec_report,
+                graph_report,
+                research_report,
             )
 
         demo.load(
             fn=init_dashboard,
             outputs=[
                 network_plot, risk_plot, timeline_plot,
-                model_dropdown, debug_console, status_html, stats_cards_html
+                model_dropdown, debug_console, status_html, stats_cards_html,
+                security_output, graph_output, research_output,
             ]
         )
     return demo

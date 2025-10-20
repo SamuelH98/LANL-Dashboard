@@ -242,9 +242,10 @@ class AnalysisAgent:
         """Analyze visualization data and provide insights about each graph type"""
         try:
             # Get data for all visualization types
-            network_data = await get_graph_for_visualization(self.agent)
-            risk_data = await get_user_behavior_data(self.agent)
-            temporal_data = await get_hourly_data(self.agent)
+            # Use 'self' (the AnalysisAgent instance) when calling helper functions
+            network_data = await get_graph_for_visualization(self)
+            risk_data = await get_user_behavior_data(self)
+            temporal_data = await get_hourly_data(self)
             
             # Create analysis summary
             analysis_data = {
@@ -483,7 +484,12 @@ async def run_quick_scan(agent: AnalysisAgent) -> str:
 async def analyze_graphs_with_agent(agent: AnalysisAgent) -> str:
     """Get agent's analysis of the visualization graphs"""
     result = await agent.analyze_graphs()
-    return format_analysis_result(result)
+    # Graph analysis has its own formatter for display
+    try:
+        return format_graph_analysis(result)
+    except Exception as e:
+        debug_log(f"Error formatting graph analysis: {e}")
+        return f"❌ Error formatting graph analysis: {e}"
 
 
 async def generate_research_conclusions_with_agent(agent: AnalysisAgent) -> str:
@@ -492,7 +498,12 @@ async def generate_research_conclusions_with_agent(agent: AnalysisAgent) -> str:
     graph_analysis = await agent.analyze_graphs()
     research_result = await agent.generate_research_conclusions(security_analysis, graph_analysis)
     
-    return format_analysis_result(research_result)
+    # Research conclusions have their own formatter
+    try:
+        return format_research_conclusions(research_result)
+    except Exception as e:
+        debug_log(f"Error formatting research conclusions: {e}")
+        return f"❌ Error formatting research conclusions: {e}"
 
 
 def format_analysis_result(result: Dict[str, Any]) -> str:
